@@ -95,29 +95,47 @@ ScopedSession = scoped_session(SessionLocal)
 
 
 def create_database() -> None:
-    """Initializes the SQLite database and runs DDL table creations.
+    """Initialises the SQLite database and runs DDL table creations.
+
+    Idempotent — if tables or indexes already exist (e.g. on server restart)
+    the function logs a debug message rather than raising an exception, because
+    an existing DB with all schema objects is a valid and expected state.
 
     This function is wrapped in a thread lock to ensure safe schema instantiation
     across multiple concurrent worker threads during startup.
     """
+    import sqlite3
+
     with _db_lock:
         logger.info("Initializing database setup and checking schemas.")
         try:
             create_all_tables()
             logger.info("Database schemas initialized successfully.")
         except Exception as e:
-            logger.error(f"Critical error creating database: {e}")
-            raise
+            err_str = str(e).lower()
+            if "already exists" in err_str:
+                logger.debug(
+                    "Database schema already present (restart scenario) — skipping DDL: %s", e
+                )
+            else:
+                logger.error("Critical error creating database: %s", e)
+                raise
+
 
 
 def create_all_tables() -> None:
-    """Executes the creation of all tables registered in the Base metadata registry."""
+    """Executes the creation of all tables registered in the Base metadata registry.
+    
+    Uses ``checkfirst=True`` so that tables and indexes that already exist in the
+    database file are silently skipped rather than raising ``OperationalError``.
+    """
     try:
-        Base.metadata.create_all(bind=engine)
+        Base.metadata.create_all(bind=engine, checkfirst=True)
         logger.info("Executed create_all for database schemas.")
     except Exception as e:
         logger.error(f"Failed to execute create_all_tables: {e}")
         raise
+
 
 
 def drop_all_tables() -> None:

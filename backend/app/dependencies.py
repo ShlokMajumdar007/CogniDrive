@@ -2,7 +2,10 @@ import logging
 from typing import Generator, Optional, Any
 from fastapi import Request
 
-from app.config import Settings, get_settings
+try:
+    from backend.app.config import Settings, get_settings
+except ImportError:
+    from app.config import Settings, get_settings  # type: ignore[no-redef]
 
 # Configure logger
 logger = logging.getLogger("CogniDrive.Dependencies")

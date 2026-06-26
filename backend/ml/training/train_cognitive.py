@@ -1,47 +1,4 @@
-"""Training pipeline for the CogniDrive Cognitive Load model.
-
-Trains the multi-output regressor consumed by
-:class:`backend.ml.inference.cognitive_model.CognitiveModel`, which predicts
-three values from the 21-dimensional per-frame feature vector (see
-:mod:`backend.features.feature_vector`):
-
-    1. **Attention Score** [0, 100] -- how focused the driver is.
-    2. **Stress Score** [0, 100] -- physiological stress level.
-    3. **Cognitive Load Index (CLI)** [0, 100] -- combined mental workload.
-
-``CognitiveModel.predict`` expects ``model.predict(x)`` to return an array of
-shape ``(1, 3)`` (or ``(n, 3)`` for batches), ordered
-``[attention, stress, cli]``. This script trains exactly that contract using
-a :class:`sklearn.multioutput.MultiOutputRegressor` wrapping per-target
-LightGBM regressors, wrapped together with a ``StandardScaler`` in a single
-``Pipeline``.
-
-Label generation (offline, no external data)
----------------------------------------------
-CogniDrive has no internet access and no labelled human driving corpus on
-the edge device. Training labels are therefore derived from the same
-domain-knowledge heuristic encoded in
-:class:`backend.ml.inference.cognitive_model._FallbackCognitiveModel`,
-applied to synthetically generated feature vectors (see
-:mod:`backend.ml.training.train_embeddings`), with additive Gaussian label
-noise. This gives the gradient-boosted model a *smoothed, generalised*
-version of the heuristic to learn -- crucially, the resulting model is
-non-linear and can be further fine-tuned later with real per-driver session
-data collected entirely on-device (continual/incremental learning is *not*
-performed here; this script produces the cold-start baseline model).
-
-The CLI relationship enforced in labels::
-
-    CLI = 0.60 * (100 - attention) + 0.40 * stress
-
-Typical usage::
-
-    python -m backend.ml.training.train_cognitive \\
-        --n-samples 30000 --n-estimators 200
-"""
-
 from __future__ import annotations
-
 import argparse
 import logging
 import sys
@@ -49,9 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
 import numpy as np
-
 try:
     import joblib
 except ImportError as exc:
@@ -59,7 +14,6 @@ except ImportError as exc:
         "joblib is required to train and persist CogniDrive ML models. "
         "Install it with `pip install joblib`."
     ) from exc
-
 try:
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
@@ -71,7 +25,6 @@ except ImportError as exc:
         "scikit-learn is required to train CogniDrive ML models. "
         "Install it with `pip install scikit-learn`."
     ) from exc
-
 try:
     from lightgbm import LGBMRegressor
 except ImportError as exc:
@@ -79,7 +32,6 @@ except ImportError as exc:
         "lightgbm is required to train the CogniDrive cognitive load model. "
         "Install it with `pip install lightgbm`."
     ) from exc
-
 try:
     from backend.features.feature_vector import FEATURE_DIM, FEATURE_NAMES
     from backend.app.config import get_settings
@@ -90,8 +42,6 @@ except ImportError:
     from app.config import get_settings
     from app.constants import MLConstants
     from ml.training.train_embeddings import SyntheticDriverDataGenerator
-
-
 def _setup_logger() -> logging.Logger:
     """Configures and returns the module logger."""
     logger = logging.getLogger("CogniDrive.Training.Cognitive")
@@ -103,10 +53,7 @@ def _setup_logger() -> logging.Logger:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
     return logger
-
-
 logger = _setup_logger()
-
 DEFAULT_N_SAMPLES: int = 30_000
 DEFAULT_N_ESTIMATORS: int = 200
 DEFAULT_MAX_DEPTH: int = 6
@@ -124,18 +71,8 @@ _IDX_FATIGUE_PROB: int = 5
 _IDX_GAZE_OFF_ROAD: int = 10
 _IDX_HEAD_DISTRACTED: int = 14
 _IDX_PREV_STRESS: int = 16
-
 _BASELINE_EAR: float = 0.28
-
 def _validate_feature_indices(feature_dim: int) -> None:
-    """Validates that all feature indices are within bounds.
-    
-    Args:
-        feature_dim: The total feature dimensionality.
-        
-    Raises:
-        ValueError: If any feature index exceeds or equals feature_dim.
-    """
     indices = {
         "EAR_MEAN": _IDX_EAR_MEAN,
         "PERCLOS": _IDX_PERCLOS,
@@ -149,46 +86,13 @@ def _validate_feature_indices(feature_dim: int) -> None:
             raise ValueError(
                 f"Feature index {name}={idx} out of range [0, {feature_dim})"
             )
-
 @dataclass
 class CognitiveLabelGenerator:
-    """Derives synthetic ``[attention, stress, cli]`` labels from feature vectors.
-
-    Implements the same domain-knowledge scoring rules as
-    :class:`backend.ml.inference.cognitive_model._FallbackCognitiveModel`,
-    plus additive Gaussian noise, so the trained LightGBM model learns a
-    *smoothed, generalisable* approximation of the heuristic rather than
-    memorising it exactly.
-
-    Attributes:
-        noise_std: Standard deviation of Gaussian noise added to each label
-            (in raw [0, 100] units) before clipping.
-        random_state: Seed for the internal NumPy random generator.
-    """
-
     noise_std: float = _LABEL_NOISE_STD
     random_state: int = DEFAULT_RANDOM_STATE
-
     def __post_init__(self) -> None:
-        """Initialises the internal random generator."""
         self._rng = np.random.default_rng(self.random_state)
-
     def generate(self, X: np.ndarray) -> np.ndarray:
-        """Computes ``[attention, stress, cli]`` labels for a feature matrix.
-
-        Args:
-            X: Feature matrix of shape ``(n_samples, FEATURE_DIM)``, with
-                columns ordered per
-                :data:`backend.features.feature_vector.FEATURE_NAMES`.
-
-        Returns:
-            np.ndarray: Label matrix of shape ``(n_samples, 3)``, dtype
-            float32, columns ordered per :data:`TARGET_NAMES`, each clipped
-            to ``[0, 100]``.
-
-        Raises:
-            ValueError: If ``X`` does not have ``FEATURE_DIM`` columns.
-        """
         if X.ndim != 2 or X.shape[1] != FEATURE_DIM:
             raise ValueError(
                 f"Expected X of shape (n_samples, {FEATURE_DIM}), got {X.shape}."
@@ -233,24 +137,7 @@ class CognitiveLabelGenerator:
 
         labels = np.column_stack([noisy_att_stress, noisy_cli]).astype(np.float32)
         return labels
-
 class CognitiveTrainer:
-    """Trains and persists the CogniDrive cognitive load (Attention/Stress/CLI) model.
-
-    Produces a ``StandardScaler -> MultiOutputRegressor(LightGBM)`` pipeline
-    whose ``.predict(X)`` returns an ``(n, 3)`` array ordered
-    ``[attention, stress, cli]``, matching the contract expected by
-    :class:`backend.ml.inference.cognitive_model.CognitiveModel`.
-
-    Attributes:
-        feature_dim: Input feature dimensionality (21).
-        n_estimators: Number of boosting rounds per LightGBM regressor.
-        max_depth: Maximum tree depth per LightGBM regressor.
-        learning_rate: LightGBM learning rate.
-        random_state: Random seed for reproducibility.
-        test_size: Fraction of samples held out for evaluation.
-    """
-
     def __init__(
         self,
         feature_dim: int = FEATURE_DIM,
@@ -260,21 +147,7 @@ class CognitiveTrainer:
         random_state: int = DEFAULT_RANDOM_STATE,
         test_size: float = DEFAULT_TEST_SIZE,
     ) -> None:
-        """Initialises the cognitive load trainer.
 
-        Args:
-            feature_dim: Dimensionality of input feature vectors.
-            n_estimators: Number of boosting rounds for each LightGBM
-                regressor (one per target).
-            max_depth: Maximum tree depth for each LightGBM regressor.
-            learning_rate: Learning rate (shrinkage) for LightGBM.
-            random_state: Seed for data generation, splitting, and model
-                initialisation.
-            test_size: Fraction (0, 1) of samples reserved for evaluation.
-
-        Raises:
-            ValueError: If any numeric argument is out of valid range.
-        """
         if feature_dim <= 0:
             raise ValueError(f"feature_dim must be positive, got {feature_dim}.")
         if n_estimators <= 0:
@@ -285,28 +158,15 @@ class CognitiveTrainer:
             raise ValueError(f"learning_rate must be in (0, 1], got {learning_rate}.")
         if not (0.0 < test_size < 1.0):
             raise ValueError(f"test_size must be in (0, 1), got {test_size}.")
-
         self.feature_dim = feature_dim
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.learning_rate = learning_rate
         self.random_state = random_state
         self.test_size = test_size
-
         self._pipeline: Optional[Pipeline] = None
         self._val_mae: Optional[Dict[str, float]] = None
-
     def generate_data(self, n_samples: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Generates synthetic features and corresponding cognitive labels.
-
-        Args:
-            n_samples: Number of synthetic samples to generate.
-
-        Returns:
-            Tuple[np.ndarray, np.ndarray]: ``(X, y)`` where ``X`` has shape
-            ``(n_samples, feature_dim)`` and ``y`` has shape
-            ``(n_samples, 3)`` ordered per :data:`TARGET_NAMES`.
-        """
         feature_generator = SyntheticDriverDataGenerator(
             feature_dim=self.feature_dim, random_state=self.random_state
         )
@@ -316,23 +176,7 @@ class CognitiveTrainer:
         y = label_generator.generate(X)
 
         return X, y
-
     def fit(self, X: np.ndarray, y: np.ndarray) -> "CognitiveTrainer":
-        """Fits the cognitive load pipeline on the provided data.
-
-        Args:
-            X: Feature matrix of shape ``(n_samples, feature_dim)``.
-            y: Label matrix of shape ``(n_samples, 3)``, ordered
-                ``[attention, stress, cli]``.
-
-        Returns:
-            CognitiveTrainer: ``self``, for method chaining.
-
-        Raises:
-            ValueError: If ``X`` or ``y`` have unexpected shapes, or fewer
-                than 2 samples are provided.
-            RuntimeError: If model training fails.
-        """
         if X.ndim != 2 or X.shape[1] != self.feature_dim:
             raise ValueError(
                 f"Expected X of shape (n_samples, {self.feature_dim}), got {X.shape}."
@@ -375,7 +219,6 @@ class CognitiveTrainer:
             verbosity=-1,
             n_jobs=-1,
         )
-
         pipeline = Pipeline([
             ("scaler", StandardScaler()),
             ("regressor", MultiOutputRegressor(estimator=base_estimator, n_jobs=1)),
@@ -387,7 +230,6 @@ class CognitiveTrainer:
         except Exception as exc:
             raise RuntimeError(f"Failed to train cognitive load model: {exc}") from exc
         elapsed = time.time() - start
-
         logger.info("Cognitive model training completed | elapsed=%.2fs", elapsed)
         y_pred = pipeline.predict(X_val)
         if y_pred.ndim != 2 or y_pred.shape[1] != 3:
@@ -407,20 +249,7 @@ class CognitiveTrainer:
 
         self._pipeline = pipeline
         return self
-
     def save(self, output_path: Path) -> Path:
-        """Serialises the trained pipeline to disk via joblib.
-
-        Args:
-            output_path: Destination ``.joblib`` file path.
-
-        Returns:
-            Path: The resolved output path the model was written to.
-
-        Raises:
-            RuntimeError: If :meth:`fit` has not been called yet, or the
-                write fails.
-        """
         if self._pipeline is None:
             raise RuntimeError("Cannot save: model must be fitted first (call fit() before save()).")
 
@@ -438,32 +267,13 @@ class CognitiveTrainer:
 
     @property
     def pipeline(self) -> Optional[Pipeline]:
-        """Returns the fitted pipeline, or ``None`` if unfit."""
         return self._pipeline
 
     @property
     def val_mae(self) -> Optional[Dict[str, float]]:
-        """Returns per-target validation MAE, or ``None`` if unfit."""
         return self._val_mae
 
     def smoke_test(self, n_probe: int = 4) -> bool:
-        """Runs a quick sanity check on the fitted pipeline.
-
-        Verifies that the pipeline produces correctly-shaped, finite,
-        in-range predictions matching the
-        :class:`~backend.ml.inference.cognitive_model.CognitiveModel`
-        contract: ``model.predict(x)`` -> shape ``(n, 3)``, values in
-        ``[0, 100]``.
-
-        Args:
-            n_probe: Number of probe samples to predict.
-
-        Returns:
-            bool: True if all sanity checks pass.
-
-        Raises:
-            RuntimeError: If :meth:`fit` has not been called yet.
-        """
         if self._pipeline is None:
             raise RuntimeError("Cannot run smoke test: model must be fitted first.")
 
@@ -508,20 +318,7 @@ class CognitiveTrainer:
 _CACHED_SETTINGS = None
 
 def resolve_output_path(explicit_path: Optional[str]) -> Path:
-    """Resolves the output path for the trained cognitive load model.
 
-    Resolution order:
-        1. ``explicit_path`` if provided.
-        2. ``<settings.MODEL_DIR>/<MLConstants.COGNITIVE_MODEL_NAME>``.
-        3. ``backend/ml/models_saved/cognitive_load_xgb.joblib`` as a final
-           hardcoded fallback.
-
-    Args:
-        explicit_path: Optional CLI-provided output path.
-
-    Returns:
-        Path: Resolved output path (not yet created on disk).
-    """
     if explicit_path:
         return Path(explicit_path)
     try:
@@ -539,15 +336,6 @@ def resolve_output_path(explicit_path: Optional[str]) -> Path:
         return fallback_path
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    """Parses command-line arguments for the cognitive model training script.
-
-    Args:
-        argv: Optional argument list (used for testing). Defaults to
-            ``sys.argv[1:]``.
-
-    Returns:
-        argparse.Namespace: Parsed arguments.
-    """
     parser = argparse.ArgumentParser(
         description="Train the CogniDrive cognitive load model (Attention/Stress/CLI), offline.",
     )
@@ -583,25 +371,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
     )
     return parser.parse_args(argv)
-
-
 def main(argv: Optional[List[str]] = None) -> int:
-    """Runs the full cognitive load model training pipeline.
-
-    Steps:
-        1. Generate synthetic 21-D driver feature data.
-        2. Derive ``[attention, stress, cli]`` labels via domain-knowledge
-           heuristics plus Gaussian noise.
-        3. Fit a ``StandardScaler -> MultiOutputRegressor(LightGBM)`` pipeline.
-        4. Run a smoke test on the fitted pipeline.
-        5. Persist the pipeline to disk via joblib.
-
-    Args:
-        argv: Optional argument list (used for testing).
-
-    Returns:
-        int: Process exit code (``0`` on success, ``1`` on failure).
-    """
     args = parse_args(argv)
     logger.info("=" * 70)
     logger.info("CogniDrive ML Training Pipeline: Cognitive Load Model")
@@ -630,7 +400,5 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception as exc:
         logger.error("✗ Training failed: %s", exc, exc_info=True)
         return 1
-
-
 if __name__ == "__main__":
     sys.exit(main())

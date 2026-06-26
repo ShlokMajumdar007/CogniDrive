@@ -49,6 +49,14 @@ except ImportError:
     _JOBLIB_AVAILABLE = False
     logger.warning("joblib not installed — EmbeddingModel will use fallback PCA.")
 
+try:
+    from backend.app.config import get_settings
+    from backend.app.constants import MLConstants
+except ImportError:
+    from app.config import get_settings
+    from app.constants import MLConstants
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -173,13 +181,19 @@ class EmbeddingModel:
 
     def __init__(
         self,
-        model_path: Path = DEFAULT_MODEL_PATH,
+        model_path: Optional[Path] = None,
     ) -> None:
         """Initialises the model by loading from disk or using the fallback.
 
         Args:
             model_path: Path to the ``joblib``-serialised encoder pipeline.
         """
+        if model_path is None:
+            try:
+                settings = get_settings()
+                model_path = Path(settings.MODEL_DIR) / MLConstants.EMBEDDING_MODEL_NAME.value
+            except Exception:
+                model_path = DEFAULT_MODEL_PATH
         self._model_path = model_path
         self._encoder, self._is_fallback = self._load_encoder(model_path)
         self._model_version: str = "1.0.0-fallback" if self._is_fallback else "1.0.0"
@@ -216,7 +230,7 @@ class EmbeddingModel:
 
     @classmethod
     def get_instance(
-        cls, model_path: Path = DEFAULT_MODEL_PATH
+        cls, model_path: Optional[Path] = None
     ) -> "EmbeddingModel":
         """Returns the singleton :class:`EmbeddingModel` instance.
 
