@@ -8,13 +8,8 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, scoped_session, Session
 
-# Try imports with backend prefix for root runner and fallback to direct imports
-try:
-    from backend.app.config import get_settings
-    from backend.database.base import Base
-except ImportError:
-    from app.config import get_settings
-    from database.base import Base
+from backend.app.config import get_settings
+from backend.database.base import Base
 
 # Setup logger for the session manager
 logger = logging.getLogger("CogniDrive.DatabaseSession")
@@ -109,6 +104,7 @@ def create_database() -> None:
     with _db_lock:
         logger.info("Initializing database setup and checking schemas.")
         try:
+            import backend.database.models  # noqa: F401 — register ORM tables
             create_all_tables()
             logger.info("Database schemas initialized successfully.")
         except Exception as e:

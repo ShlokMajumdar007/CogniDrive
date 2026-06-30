@@ -39,16 +39,10 @@ except ImportError as exc:  # pragma: no cover
 # ---------------------------------------------------------------------------
 # Project imports with fallback for direct script execution.
 # ---------------------------------------------------------------------------
-try:
-    from backend.features.feature_vector import FEATURE_DIM
-    from backend.app.config import get_settings
-    from backend.app.constants import MLConstants
-    from backend.ml.training.train_embeddings import SyntheticDriverDataGenerator
-except ImportError:
-    from features.feature_vector import FEATURE_DIM  # type: ignore[no-redef]
-    from app.config import get_settings  # type: ignore[no-redef]
-    from app.constants import MLConstants  # type: ignore[no-redef]
-    from ml.training.train_embeddings import SyntheticDriverDataGenerator  # type: ignore[no-redef]
+from backend.features.feature_vector import FEATURE_DIM
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+from backend.ml.training.train_embeddings import SyntheticDriverDataGenerator
 logger = logging.getLogger("CogniDrive.Training.Risk")
 if not logger.handlers:
     _handler = logging.StreamHandler(sys.stdout)
@@ -500,8 +494,7 @@ def resolve_output_path(explicit_path: Optional[str]) -> Path:
         return Path(explicit_path)
 
     try:
-        settings = get_settings()
-        return Path(settings.MODEL_DIR) / MLConstants.RISK_MODEL_NAME.value
+        return get_model_path(MLConstants.RISK_MODEL_NAME)
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.warning(
             "Could not resolve output path from settings (%s); using default "

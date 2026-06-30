@@ -1,18 +1,7 @@
 """Accident Risk Model — binary and probabilistic risk inference.
 
 Predicts the probability that the current driver state will lead to an
-accident or near-miss event within the next 30 seconds. Outputs:
-
-    - **Risk Score** [0, 1]: Continuous probability of imminent accident.
-    - **Risk Level**: Discrete categorical label (LOW / MEDIUM / HIGH / CRITICAL).
-    - **Driver State**: :class:`~backend.database.models.driving_metrics.DriverState`
-      classification.
-
-Model architecture:
-    An XGBoost binary classifier trained on labelled high-risk driving
-    sequences. The risk score is the model's positive-class probability
-    output. A fallback heuristic model is used when the trained model
-    is unavailable.
+accident or near-miss event within the next 30 seconds.
 
 Risk thresholds::
 
@@ -20,18 +9,13 @@ Risk thresholds::
     0.30 ≤ risk < 0.60  → MEDIUM
     0.60 ≤ risk < 0.80  → HIGH
     risk ≥ 0.80  → CRITICAL
-
-Typical usage::
-
-    model = RiskModel.get_instance()
-    result = model.predict(feature_vector, cognitive_result)
-    print(result.risk_score, result.risk_level, result.driver_state)
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -46,19 +30,12 @@ try:
 except ImportError:
     _JOBLIB_AVAILABLE = False
 
-# Lazy import to avoid circular dependency
-try:
-    from backend.database.models.driving_metrics import DriverState
-except ImportError:
-    from database.models.driving_metrics import DriverState  # type: ignore[no-redef]
-
-try:
-    from backend.ml.inference.cognitive_model import CognitiveResult
-except ImportError:
-    from ml.inference.cognitive_model import CognitiveResult  # type: ignore[no-redef]
+from backend.database.models.driving_metrics import DriverState
+from backend.ml.inference.cognitive_model import CognitiveResult
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
 
 FEATURE_DIM: int = 21
-DEFAULT_MODEL_PATH: Path = Path("backend/ml/models/risk_model.joblib")
 
 # Risk level thresholds
 _RISK_LOW = 0.30
@@ -73,19 +50,7 @@ _RISK_HIGH = 0.80
 
 @dataclass
 class RiskResult:
-    """Accident risk inference result for a single feature vector.
-
-    Attributes:
-        risk_score: Probability of imminent accident [0, 1].
-        risk_level: Discrete label: LOW / MEDIUM / HIGH / CRITICAL.
-        driver_state: :class:`DriverState` classification.
-        fatigue_probability: Fatigue sub-probability [0, 1].
-        distraction_probability: Distraction sub-probability [0, 1].
-        aggression_score: Driving aggression sub-score [0, 1].
-        model_version: Version of the model used.
-        shap_values: Optional SHAP feature contributions dict.
-        is_fallback: True when the fallback heuristic was used.
-    """
+    """Accident risk inference result for a single feature vector."""
 
     risk_score: float = 0.0
     risk_level: str = "LOW"
@@ -99,14 +64,6 @@ class RiskResult:
 
 
 def _classify_risk_level(score: float) -> str:
-    """Converts a continuous risk score to a discrete label.
-
-    Args:
-        score: Risk probability in [0, 1].
-
-    Returns:
-        str: One of 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'.
-    """
     if score >= _RISK_HIGH:
         return "CRITICAL"
     elif score >= _RISK_MEDIUM:
@@ -122,19 +79,6 @@ def _classify_driver_state(
     distraction_prob: float,
     cli: float,
 ) -> DriverState:
-    """Maps continuous scores to the most critical DriverState.
-
-    Priority order: HIGH_RISK > FATIGUED > DISTRACTED > OVERLOADED > NORMAL.
-
-    Args:
-        risk_score: Overall risk probability.
-        fatigue_prob: Fatigue sub-probability.
-        distraction_prob: Distraction sub-probability.
-        cli: Cognitive Load Index [0, 100].
-
-    Returns:
-        DriverState: Most critical state for this frame.
-    """
     if risk_score >= _RISK_HIGH:
         return DriverState.HIGH_RISK
     if fatigue_prob >= 0.60:
@@ -154,9 +98,6 @@ def _classify_driver_state(
 class _FallbackRiskModel:
     """Heuristic risk model based on domain-knowledge feature thresholds.
 
-    Used when the XGBoost model file is not available. Combines PERCLOS,
-    EAR, gaze off-road, head distraction, and CLI to estimate risk.
-
     Feature indices used::
         [2]  ear_mean
         [4]  perclos
@@ -170,15 +111,6 @@ class _FallbackRiskModel:
     def predict(
         self, x: np.ndarray, cognitive_result: Optional[CognitiveResult] = None
     ) -> RiskResult:
-        """Heuristic risk prediction.
-
-        Args:
-            x: Feature vector of shape (21,).
-            cognitive_result: Optional cognitive model output for CLI.
-
-        Returns:
-            RiskResult: Heuristic risk estimate.
-        """
         perclos = float(x[4])
         fatigue_prob = float(x[5])
         off_road = float(x[10])
@@ -187,7 +119,6 @@ class _FallbackRiskModel:
 
         cli = cognitive_result.cli if cognitive_result else float(x[17]) * 100.0
 
-        # Combine sub-risks with weighted sum
         risk_raw = (
             0.30 * fatigue_prob
             + 0.25 * perclos
@@ -195,11 +126,10 @@ class _FallbackRiskModel:
             + 0.15 * head_distracted
             + 0.10 * (cli / 100.0)
         )
-        # Apply temporal smoothing with previous frame's risk
         risk_score = float(np.clip(0.80 * risk_raw + 0.20 * prev_risk, 0.0, 1.0))
 
         distraction_prob = float(np.clip(0.60 * off_road + 0.40 * head_distracted, 0.0, 1.0))
-        aggression_score = 0.0  # Not computable from biometrics alone
+        aggression_score = 0.0
 
         driver_state = _classify_driver_state(
             risk_score, fatigue_prob, distraction_prob, cli
@@ -223,25 +153,14 @@ class _FallbackRiskModel:
 
 
 class RiskModel:
-    """Thread-safe singleton XGBoost accident risk inference model.
-
-    Loads a pre-trained XGBoost classifier from disk. Falls back to the
-    heuristic model when unavailable.
-
-    Attributes:
-        _instance: Class-level singleton reference.
-        _lock: Threading lock guarding singleton creation.
-    """
+    """Thread-safe singleton XGBoost accident risk inference model."""
 
     _instance: Optional["RiskModel"] = None
     _lock: threading.Lock = threading.Lock()
 
-    def __init__(self, model_path: Path = DEFAULT_MODEL_PATH) -> None:
-        """Initialises the risk model.
-
-        Args:
-            model_path: Path to the ``joblib``-serialised XGBoost pipeline.
-        """
+    def __init__(self, model_path: Optional[Path] = None) -> None:
+        if model_path is None:
+            model_path = get_model_path(MLConstants.RISK_MODEL_NAME)
         self._model_path = model_path
         self._model, self._is_fallback = self._load_model(model_path)
         self._model_version = "1.0.0-fallback" if self._is_fallback else "1.0.0"
@@ -263,17 +182,7 @@ class RiskModel:
         return _FallbackRiskModel(), True
 
     @classmethod
-    def get_instance(
-        cls, model_path: Path = DEFAULT_MODEL_PATH
-    ) -> "RiskModel":
-        """Returns the singleton :class:`RiskModel` instance.
-
-        Args:
-            model_path: Forwarded to ``__init__`` on first call.
-
-        Returns:
-            RiskModel: Shared singleton.
-        """
+    def get_instance(cls, model_path: Optional[Path] = None) -> "RiskModel":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -293,8 +202,7 @@ class RiskModel:
 
         Args:
             feature_vector: NumPy array of shape (21,), dtype float32.
-            cognitive_result: Optional :class:`CognitiveResult` for CLI
-                enrichment of the fallback model.
+            cognitive_result: Optional CognitiveResult for CLI enrichment.
 
         Returns:
             RiskResult: Predicted risk score, level, state, and sub-scores.
@@ -305,11 +213,15 @@ class RiskModel:
             return self._model.predict(x.squeeze(0), cognitive_result)
 
         try:
-            proba = self._model.predict_proba(x)  # (1, 2)
+            # Suppress sklearn/xgboost feature-name warnings when model was
+            # trained with a DataFrame but receives a plain numpy array.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*feature names.*")
+                proba = self._model.predict_proba(x)  # (1, 2)
+
             risk_score = float(np.clip(proba[0, 1], 0.0, 1.0))
 
-            # Extract sub-probabilities if the model exposes them
-            fatigue_prob = float(x[0, 5])  # from feature vector
+            fatigue_prob = float(x[0, 5])
             distraction_prob = float(
                 np.clip(float(x[0, 10]) * 0.6 + float(x[0, 14]) * 0.4, 0.0, 1.0)
             )
@@ -338,15 +250,7 @@ class RiskModel:
         feature_matrix: np.ndarray,
         cognitive_results: Optional[List[CognitiveResult]] = None,
     ) -> List[RiskResult]:
-        """Runs risk inference on an (N, 21) feature matrix.
-
-        Args:
-            feature_matrix: Array of shape (N, 21), dtype float32.
-            cognitive_results: Optional list of N cognitive results.
-
-        Returns:
-            List[RiskResult]: N results in input order.
-        """
+        """Runs risk inference on an (N, 21) feature matrix."""
         cog = cognitive_results or [None] * len(feature_matrix)  # type: ignore[list-item]
         return [self.predict(row, c) for row, c in zip(feature_matrix, cog)]
 

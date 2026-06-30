@@ -35,14 +35,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from sqlalchemy.orm import Session
 
-try:
-    from backend.ml.inference.embedding_model import EmbeddingModel, EmbeddingResult
-    from backend.database.models.embeddings import DriverEmbedding
-    from backend.database.models.driver_profile import DriverProfile
-except ImportError:
-    from ml.inference.embedding_model import EmbeddingModel, EmbeddingResult
-    from database.models.embeddings import DriverEmbedding
-    from database.models.driver_profile import DriverProfile
+from backend.ml.inference.embedding_model import EmbeddingModel, EmbeddingResult
+from backend.database.models.embeddings import DriverEmbedding
+from backend.database.models.driver_profile import DriverProfile
 
 logger = logging.getLogger("CogniDrive.DriverEmbeddingManager")
 

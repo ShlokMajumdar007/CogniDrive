@@ -59,25 +59,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from sqlalchemy.orm import Session
 
-# Fallback imports
-try:
-    from backend.ml.inference.mobilefacenet_model import (
-        MobileFaceNetModel,
-        FaceVerificationResult,
-    )
-    from backend.repositories.face_repository import FaceRepository
-    from backend.database.models.driver_profile import DriverProfile
-    from backend.database.models.face_enrollment import FaceEnrollment
-    from backend.database.models.embeddings import DriverEmbedding
-except ImportError:
-    from ml.inference.mobilefacenet_model import (
-        MobileFaceNetModel,
-        FaceVerificationResult,
-    )
-    from repositories.face_repository import FaceRepository
-    from database.models.driver_profile import DriverProfile
-    from database.models.face_enrollment import FaceEnrollment
-    from database.models.embeddings import DriverEmbedding
+from backend.ml.inference.mobilefacenet_model import (
+    MobileFaceNetModel,
+    FaceVerificationResult,
+)
+from backend.repositories.face_repository import FaceRepository
+from backend.database.models.driver_profile import DriverProfile
+from backend.database.models.face_enrollment import FaceEnrollment
+from backend.database.models.embeddings import DriverEmbedding
 
 # Optional cv2 for image decode
 try:

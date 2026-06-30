@@ -12,15 +12,9 @@ from typing import Any, Dict, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-# Project imports with fallback
-try:
-    from backend.database.models.session_data import SessionData, SessionStatus
-    from backend.database.models.driving_metrics import DrivingMetric
-    from backend.database.models.driver_profile import DriverProfile
-except ImportError:
-    from database.models.session_data import SessionData, SessionStatus  # type: ignore[no-redef]
-    from database.models.driving_metrics import DrivingMetric  # type: ignore[no-redef]
-    from database.models.driver_profile import DriverProfile  # type: ignore[no-redef]
+from backend.database.models.session_data import SessionData, SessionStatus
+from backend.database.models.driving_metrics import DrivingMetric
+from backend.database.models.driver_profile import DriverProfile
 
 logger = logging.getLogger("CogniDrive.DashboardService")
 

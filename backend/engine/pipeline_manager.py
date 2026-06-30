@@ -15,53 +15,29 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from sqlalchemy.orm import Session
 
-# Project imports with fallback
-try:
-    from backend.vision.landmark_extractor import LandmarkExtractor, LandmarkResult
-    from backend.vision.ear import compute_ear, BlinkTracker
-    from backend.vision.mar import compute_mar, YawnTracker
-    from backend.vision.gaze import GazeEstimator, DistractionTracker
-    from backend.vision.head_pose import HeadPoseEstimator
-    from backend.vision.perclos import PERCLOSCalculator
-    from backend.features.feature_vector import FeatureVectorBuilder, RawSignals
-    from backend.features.normalizer import FeatureNormalizer, NormalizerStats
-    from backend.features.windowing import SignalWindowManager
-    from backend.ml.inference.cognitive_model import CognitiveResult
-    from backend.ml.inference.risk_model import RiskResult
-    from backend.ml.anomaly_detection.anomaly_engine import AnomalyEngine, AnomalyResult
-    from backend.ml.recommendation.recommendation_engine import RecommendationEngine
-    from backend.digital_twin.personalization import PersonalizationEngine, TrackedSignal
-    from backend.digital_twin.threshold_manager import ThresholdManager
-    from backend.engine.cognitive_load_engine import CognitiveLoadEngine
-    from backend.engine.accident_risk_engine import AccidentRiskEngine
-    from backend.engine.state_classifier import StateClassifier
-    from backend.database.models.driving_metrics import DrivingMetric, DriverState
-    from backend.database.models.session_data import SessionData
-    from backend.database.models.driver_profile import DriverProfile
-    from backend.database.models.recommendations import Recommendation
-except ImportError:
-    from vision.landmark_extractor import LandmarkExtractor, LandmarkResult  # type: ignore[no-redef]
-    from vision.ear import compute_ear, BlinkTracker  # type: ignore[no-redef]
-    from vision.mar import compute_mar, YawnTracker  # type: ignore[no-redef]
-    from vision.gaze import GazeEstimator, DistractionTracker  # type: ignore[no-redef]
-    from vision.head_pose import HeadPoseEstimator  # type: ignore[no-redef]
-    from vision.perclos import PERCLOSCalculator  # type: ignore[no-redef]
-    from features.feature_vector import FeatureVectorBuilder, RawSignals  # type: ignore[no-redef]
-    from features.normalizer import FeatureNormalizer, NormalizerStats  # type: ignore[no-redef]
-    from features.windowing import SignalWindowManager  # type: ignore[no-redef]
-    from ml.inference.cognitive_model import CognitiveResult  # type: ignore[no-redef]
-    from ml.inference.risk_model import RiskResult  # type: ignore[no-redef]
-    from ml.anomaly_detection.anomaly_engine import AnomalyEngine, AnomalyResult  # type: ignore[no-redef]
-    from ml.recommendation.recommendation_engine import RecommendationEngine  # type: ignore[no-redef]
-    from digital_twin.personalization import PersonalizationEngine, TrackedSignal  # type: ignore[no-redef]
-    from digital_twin.threshold_manager import ThresholdManager  # type: ignore[no-redef]
-    from engine.cognitive_load_engine import CognitiveLoadEngine  # type: ignore[no-redef]
-    from engine.accident_risk_engine import AccidentRiskEngine  # type: ignore[no-redef]
-    from engine.state_classifier import StateClassifier  # type: ignore[no-redef]
-    from database.models.driving_metrics import DrivingMetric, DriverState  # type: ignore[no-redef]
-    from database.models.session_data import SessionData  # type: ignore[no-redef]
-    from database.models.driver_profile import DriverProfile  # type: ignore[no-redef]
-    from database.models.recommendations import Recommendation  # type: ignore[no-redef]
+# Project imports
+from backend.vision.landmark_extractor import LandmarkExtractor, LandmarkResult
+from backend.vision.ear import compute_ear, BlinkTracker
+from backend.vision.mar import compute_mar, YawnTracker
+from backend.vision.gaze import GazeEstimator, DistractionTracker
+from backend.vision.head_pose import HeadPoseEstimator
+from backend.vision.perclos import PERCLOSCalculator
+from backend.features.feature_vector import FeatureVectorBuilder, RawSignals
+from backend.features.normalizer import FeatureNormalizer, NormalizerStats
+from backend.features.windowing import SignalWindowManager
+from backend.ml.inference.cognitive_model import CognitiveResult
+from backend.ml.inference.risk_model import RiskResult
+from backend.ml.anomaly_detection.anomaly_engine import AnomalyEngine, AnomalyResult
+from backend.ml.recommendation.recommendation_engine import RecommendationEngine
+from backend.digital_twin.personalization import PersonalizationEngine, TrackedSignal
+from backend.digital_twin.threshold_manager import ThresholdManager
+from backend.engine.cognitive_load_engine import CognitiveLoadEngine
+from backend.engine.accident_risk_engine import AccidentRiskEngine
+from backend.engine.state_classifier import StateClassifier
+from backend.database.models.driving_metrics import DrivingMetric, DriverState
+from backend.database.models.session_data import SessionData
+from backend.database.models.driver_profile import DriverProfile
+from backend.database.models.recommendations import Recommendation
 
 logger = logging.getLogger("CogniDrive.PipelineManager")
 
@@ -111,13 +87,15 @@ class PipelineManager:
         self.prev_cli: float = 0.0
         self.prev_risk: float = 0.0
 
+        # Last processed prediction — used by dashboard SSE stream.
+        # Always a dict; initialised to an empty sentinel so consumers can
+        # call getattr(pipeline, "last_prediction", None) safely.
+        self.last_prediction: Optional[Dict[str, Any]] = None
+
         logger.info("PipelineManager successfully initialized.")
 
     def start_session(self, driver_id: int, session_id: int, db_session: Session) -> None:
-        """Configures the pipeline for an active driver session.
-
-        Loads driver baselines and personalized thresholds.
-        """
+        """Configures the pipeline for an active driver session."""
         self.active_driver_id = driver_id
         self.active_session_id = session_id
         self.db_session = db_session
@@ -132,7 +110,6 @@ class PipelineManager:
         # Hydrate personalization baselines if available in driver profile
         driver = db_session.get(DriverProfile, driver_id)
         if driver:
-            # Check if saved baseline file exists
             baseline_file = Path(self.settings.MODEL_DIR) / f"driver_{driver_id}_baseline.json"
             if baseline_file.exists():
                 try:
@@ -144,7 +121,6 @@ class PipelineManager:
             else:
                 self.feature_normalizer.load_population_stats()
 
-            # Load active thresholds
             self.threshold_manager.load_from_disk(driver_id)
         else:
             self.feature_normalizer.load_population_stats()
@@ -157,14 +133,11 @@ class PipelineManager:
             driver_id = self.active_driver_id
             logger.info("PipelineManager: Ending session for driver %d.", driver_id)
 
-            # Mark end of session in personalization engine
             self.personalization_engine.end_session(driver_id)
 
-            # Compute and apply updated thresholds
             adaptive = self.personalization_engine.compute_all_thresholds(driver_id)
             self.threshold_manager.update(driver_id, adaptive)
 
-            # Export normalizer stats to baseline file
             baseline_file = Path(self.settings.MODEL_DIR) / f"driver_{driver_id}_baseline.json"
             try:
                 self.feature_normalizer.save_to_file(baseline_file)
@@ -185,8 +158,11 @@ class PipelineManager:
     ) -> Dict[str, Any]:
         """Main pipeline loop.
 
-        Runs landmark extraction, metric computation, ML models, state classification, 
+        Runs landmark extraction, metric computation, ML models, state classification,
         personalization updates, recommendation checks, and DB persistence.
+
+        Always updates self.last_prediction before returning so the SSE dashboard
+        stream always has a fresh snapshot even when no face is detected.
         """
         if self.active_driver_id is None or self.db_session is None:
             raise RuntimeError("PipelineManager.process_frame: No active session.")
@@ -207,16 +183,21 @@ class PipelineManager:
         lm_result: LandmarkResult = self.landmark_extractor.extract(frame)
 
         if not lm_result.is_valid:
-            # Face not tracked. Return degraded unknown state
-            return {
+            # Face not tracked — return degraded state but still update last_prediction
+            result: Dict[str, Any] = {
                 "face_detected": False,
-                "driver_state": DriverState.NORMAL,
+                "frame_number": frame_number,
+                "driver_state": DriverState.NORMAL.value
+                    if isinstance(DriverState.NORMAL, DriverState)
+                    else str(DriverState.NORMAL),
                 "attention_score": self.prev_attention,
                 "stress_score": self.prev_stress,
                 "cli": self.prev_cli,
                 "risk_score": self.prev_risk,
                 "recommendations": [],
             }
+            self.last_prediction = result
+            return result
 
         # 2. Extract Biometrics
         ear_res = compute_ear(
@@ -280,7 +261,6 @@ class PipelineManager:
         feature_vector = self.feature_builder.build(raw_signals)
         norm_vector = self.feature_normalizer.normalize(feature_vector)
 
-        # Update online standardizer stats for learning driver baselines
         self.feature_normalizer.update_online(feature_vector)
 
         # 5. Model Inferences
@@ -288,24 +268,17 @@ class PipelineManager:
         risk_res = self.risk_engine.estimate_accident_risk(norm_vector.to_numpy(), cog_res)
         anomaly_res = self.anomaly_engine.predict(norm_vector.to_numpy())
 
-        # Update cached predictions
+        # Always update cached predictions so last_prediction is never stale
         self.prev_attention = cog_res.attention_score
         self.prev_stress = cog_res.stress_score
         self.prev_cli = cog_res.cli
         self.prev_risk = risk_res.risk_score
 
         # 6. DT Thresholds and State Classification
-        # Plain thresholds mapping (keys from ThresholdManager)
-        # Note: ThresholdManager in digital_twin maps: EAR_MEAN, MAR, etc.
-        # While ThresholdManager in ml/digital_twin maps: cli, attention_score, etc.
-        # Since we use digital_twin.threshold_manager, we can get active threshold values
         thresh_map = {}
         for signal in TrackedSignal:
             thresh_map[signal.value] = self.threshold_manager.get(driver_id, signal)
 
-        # Map ML threshold keys specifically
-        thresh_map["cli"] = self.threshold_manager.get_default(TrackedSignal.MAR) * 100.0  # Safe defaults fallback
-        # Let's override with known defaults or lookups if defined
         thresh_map["risk_score_high"] = 0.60
         thresh_map["fatigue_probability"] = 0.60
         thresh_map["distraction_probability"] = 0.60
@@ -404,20 +377,24 @@ class PipelineManager:
         )
         self.db_session.add(db_metric)
 
-        # Periodically commit to DB and run normalizer online baseline commits
-        if frame_number % 300 == 0:  # Commit every ~10 seconds at 30 fps
+        if frame_number % 300 == 0:
             try:
                 self.db_session.commit()
-                # If online normalizer collected enough frames, commit to active profile stats
                 self.feature_normalizer.commit_online_stats(min_samples=100)
             except Exception as exc:
                 logger.error("Failed to commit metrics payload: %s", exc)
                 self.db_session.rollback()
 
-        # Build output dict
-        return {
+        # Serialise driver_state to string for JSON compatibility
+        driver_state_value = (
+            driver_state.value if isinstance(driver_state, DriverState) else str(driver_state)
+        )
+
+        # Build output dict and cache it for the SSE dashboard stream
+        result = {
             "face_detected": True,
-            "driver_state": driver_state,
+            "frame_number": frame_number,
+            "driver_state": driver_state_value,
             "attention_score": cog_res.attention_score,
             "stress_score": cog_res.stress_score,
             "cli": cog_res.cli,
@@ -437,3 +414,8 @@ class PipelineManager:
                 "gaze_y": gaze_res.vertical_ratio,
             },
         }
+
+        # Always update last_prediction so the SSE stream can read it
+        self.last_prediction = result
+
+        return result

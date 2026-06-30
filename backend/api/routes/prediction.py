@@ -8,12 +8,6 @@ Exposes two HTTP endpoints:
 All inference runs entirely offline using the PipelineManager singleton. Images are
 transmitted as base64 strings. The router uses the project-standard ``_get_db``
 FastAPI dependency for SQLAlchemy session management.
-
-Error handling:
-    - 400 Bad Request  — Invalid image data or feature vector.
-    - 404 Not Found    — Session not found.
-    - 503 Unavailable  — PipelineManager not initialized.
-    - 500 Server Error — Unexpected inference or persistence failures.
 """
 
 from __future__ import annotations
@@ -25,18 +19,14 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
 
 import numpy as np
+import cv2
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-try:
-    from backend.services.prediction_service import PredictionService
-    from backend.schemas.prediction_schema import PredictionResponse, CognitiveStateResponse
-    from backend.database.models.driving_metrics import DrivingMetric, DriverState
-except ImportError:
-    from services.prediction_service import PredictionService  # type: ignore[no-redef]
-    from schemas.prediction_schema import PredictionResponse, CognitiveStateResponse  # type: ignore[no-redef]
-    from database.models.driving_metrics import DrivingMetric, DriverState  # type: ignore[no-redef]
+from backend.services.prediction_service import PredictionService
+from backend.schemas.prediction_schema import PredictionResponse, CognitiveStateResponse
+from backend.database.models.driving_metrics import DrivingMetric, DriverState
 
 logger = logging.getLogger("CogniDrive.PredictionRouter")
 
@@ -47,7 +37,7 @@ router = APIRouter(
 
 
 # ---------------------------------------------------------------------------
-# Request / response schemas (local — avoids polluting the shared schema module)
+# Request / response schemas
 # ---------------------------------------------------------------------------
 
 
@@ -68,14 +58,19 @@ class RealtimePredictionRequest(BaseModel):
     frame_b64: Optional[str] = Field(default=None, description="Base64-encoded BGR frame (JPEG/PNG)")
     feature_vector: Optional[List[float]] = Field(
         default=None,
-        min_length=21,
-        max_length=21,
         description="Pre-computed 21-D feature vector (used when no frame is supplied)",
     )
     telemetry: Optional[Dict[str, float]] = Field(
         default=None,
         description="Optional vehicle telemetry dict (speed, steering_angle, …)",
     )
+
+    @field_validator("feature_vector")
+    @classmethod
+    def validate_feature_vector_length(cls, v: Optional[List[float]]) -> Optional[List[float]]:
+        if v is not None and len(v) != 21:
+            raise ValueError(f"feature_vector must have exactly 21 elements, got {len(v)}")
+        return v
 
 
 class SessionHistoryResponse(BaseModel):
@@ -160,9 +155,13 @@ async def realtime_prediction(
     frame: Optional[np.ndarray] = None
     if payload.frame_b64 is not None:
         try:
-            raw = base64.b64decode(payload.frame_b64)
+            # Strip data-URI prefix if present (e.g. "data:image/jpeg;base64,...")
+            b64_data = payload.frame_b64
+            if "," in b64_data:
+                b64_data = b64_data.split(",", 1)[1]
+
+            raw = base64.b64decode(b64_data)
             buf = np.frombuffer(raw, dtype=np.uint8)
-            import cv2  # type: ignore[import]
             frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
             if frame is None:
                 raise ValueError("cv2.imdecode returned None — invalid image bytes.")
@@ -172,28 +171,22 @@ async def realtime_prediction(
                 detail=f"Failed to decode frame_b64: {exc}",
             ) from exc
 
+    # If no frame but feature_vector provided, send a blank placeholder frame
+    # so the pipeline still runs (landmark extraction will return no face, which
+    # is handled gracefully by process_frame).
+    if frame is None:
+        frame = np.zeros((112, 112, 3), dtype=np.uint8)
+
     t0 = time.perf_counter()
     try:
-        if frame is not None:
-            result = service.process_realtime_frame(
-                driver_id=payload.driver_id,
-                session_id=payload.session_id,
-                frame=frame,
-                frame_number=payload.frame_number,
-                frame_time_ms=payload.frame_time_ms,
-                telemetry=payload.telemetry,
-            )
-        else:
-            # Feature-vector fast path: wrap in a minimal pipeline result dict
-            fv = np.array(payload.feature_vector, dtype=np.float32)
-            result = service.process_realtime_frame(
-                driver_id=payload.driver_id,
-                session_id=payload.session_id,
-                frame=np.zeros((48, 48, 3), dtype=np.uint8),  # dummy blank frame
-                frame_number=payload.frame_number,
-                frame_time_ms=payload.frame_time_ms,
-                telemetry=payload.telemetry,
-            )
+        result = service.process_realtime_frame(
+            driver_id=payload.driver_id,
+            session_id=payload.session_id,
+            frame=frame,
+            frame_number=payload.frame_number,
+            frame_time_ms=payload.frame_time_ms,
+            telemetry=payload.telemetry,
+        )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

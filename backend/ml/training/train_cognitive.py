@@ -32,16 +32,10 @@ except ImportError as exc:
         "lightgbm is required to train the CogniDrive cognitive load model. "
         "Install it with `pip install lightgbm`."
     ) from exc
-try:
-    from backend.features.feature_vector import FEATURE_DIM, FEATURE_NAMES
-    from backend.app.config import get_settings
-    from backend.app.constants import MLConstants
-    from backend.ml.training.train_embeddings import SyntheticDriverDataGenerator
-except ImportError:
-    from features.feature_vector import FEATURE_DIM, FEATURE_NAMES
-    from app.config import get_settings
-    from app.constants import MLConstants
-    from ml.training.train_embeddings import SyntheticDriverDataGenerator
+from backend.features.feature_vector import FEATURE_DIM, FEATURE_NAMES
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+from backend.ml.training.train_embeddings import SyntheticDriverDataGenerator
 def _setup_logger() -> logging.Logger:
     """Configures and returns the module logger."""
     logger = logging.getLogger("CogniDrive.Training.Cognitive")
@@ -315,22 +309,16 @@ class CognitiveTrainer:
         )
         return True
 
-_CACHED_SETTINGS = None
-
 def resolve_output_path(explicit_path: Optional[str]) -> Path:
 
     if explicit_path:
         return Path(explicit_path)
     try:
-        global _CACHED_SETTINGS
-        if _CACHED_SETTINGS is None:
-            _CACHED_SETTINGS = get_settings()
-        model_path = Path(_CACHED_SETTINGS.MODEL_DIR) / MLConstants.COGNITIVE_MODEL_NAME.value
-        return model_path
+        return get_model_path(MLConstants.COGNITIVE_MODEL_NAME)
     except Exception as exc:  # pragma: no cover - defensive fallback
         fallback_path = Path("backend/ml/models_saved/cognitive_load_xgb.joblib")
         logger.warning(
-            "Could not resolve path from settings (%s); using fallback: %s", 
+            "Could not resolve path from settings (%s); using fallback: %s",
             exc, fallback_path
         )
         return fallback_path
@@ -392,13 +380,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_path = resolve_output_path(args.output_path)
         saved_path = trainer.save(output_path)
         logger.info("=" * 70)
-        logger.info("✓ Training completed successfully")
+        logger.info("Training completed successfully")
         logger.info("Model metrics: %s", trainer.val_mae)
         logger.info("Saved to: %s", saved_path)
         logger.info("=" * 70)
         return 0
     except Exception as exc:
-        logger.error("✗ Training failed: %s", exc, exc_info=True)
+        logger.error("Training failed: %s", exc, exc_info=True)
         return 1
 if __name__ == "__main__":
     sys.exit(main())

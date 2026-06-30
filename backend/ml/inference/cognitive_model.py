@@ -13,18 +13,13 @@ Model architecture:
 The CLI is computed as a weighted combination of attention and stress::
 
     CLI = 0.60 * (100 - attention) + 0.40 * stress
-
-Typical usage::
-
-    model = CognitiveModel.get_instance()
-    result = model.predict(feature_vector)
-    print(result.cli, result.attention_score, result.stress_score)
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -39,8 +34,10 @@ try:
 except ImportError:
     _JOBLIB_AVAILABLE = False
 
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+
 FEATURE_DIM: int = 21
-DEFAULT_MODEL_PATH: Path = Path("backend/ml/models/cognitive_model.joblib")
 
 # CLI weighting constants
 _CLI_ATTENTION_WEIGHT: float = 0.60
@@ -54,19 +51,7 @@ _CLI_STRESS_WEIGHT: float = 0.40
 
 @dataclass
 class CognitiveResult:
-    """Cognitive load inference result for a single feature vector.
-
-    Attributes:
-        attention_score: Driver attention score [0, 100]. Higher is more attentive.
-        stress_score: Physiological stress level [0, 100]. Higher is more stressed.
-        cli: Cognitive Load Index [0, 100]. Higher is more overloaded.
-        is_overloaded: True when CLI exceeds 70.0.
-        is_highly_stressed: True when stress_score exceeds 70.0.
-        is_inattentive: True when attention_score falls below 40.0.
-        model_version: Version of the model used for inference.
-        feature_importances: Optional SHAP-like feature importance dict.
-        is_fallback: True when the fallback linear model was used.
-    """
+    """Cognitive load inference result for a single feature vector."""
 
     attention_score: float = 100.0
     stress_score: float = 0.0
@@ -87,9 +72,6 @@ class CognitiveResult:
 class _FallbackCognitiveModel:
     """Simple heuristic cognitive model used when the trained model is absent.
 
-    Computes approximate attention and stress from raw EAR, PERCLOS, and
-    gaze features using hand-crafted weights based on domain knowledge.
-
     Feature indices used (from FEATURE_NAMES)::
         [2]  ear_mean
         [4]  perclos
@@ -101,33 +83,23 @@ class _FallbackCognitiveModel:
     """
 
     def predict(self, x: np.ndarray) -> CognitiveResult:
-        """Predicts cognitive state from a 21-D feature vector.
+        ear_mean = float(x[2])
+        perclos = float(x[4])
+        fatigue_prob = float(x[5])
+        off_road = float(x[10])
+        head_distracted = float(x[14])
+        prev_stress_norm = float(x[16])
+        prev_cli_norm = float(x[17])
 
-        Args:
-            x: Feature array of shape (21,), values normalised to model range.
-
-        Returns:
-            CognitiveResult: Fallback heuristic prediction.
-        """
-        ear_mean = float(x[2])           # [0, 0.5] → good: 0.28
-        perclos = float(x[4])            # [0, 1]
-        fatigue_prob = float(x[5])       # [0, 1]
-        off_road = float(x[10])          # binary
-        head_distracted = float(x[14])   # binary
-        prev_stress_norm = float(x[16])  # [0, 1]
-        prev_cli_norm = float(x[17])     # [0, 1]
-
-        # Attention: penalise off-road gaze, head distraction, low EAR
         attention_raw = (
             1.0
             - 0.40 * off_road
             - 0.25 * head_distracted
-            - 0.25 * max(0.0, (0.28 - ear_mean) / 0.28)  # EAR below baseline
+            - 0.25 * max(0.0, (0.28 - ear_mean) / 0.28)
             - 0.10 * perclos
         )
         attention_score = float(np.clip(attention_raw * 100.0, 0.0, 100.0))
 
-        # Stress: rises with fatigue and previous stress momentum
         stress_raw = (
             0.50 * fatigue_prob
             + 0.30 * perclos
@@ -162,28 +134,14 @@ class _FallbackCognitiveModel:
 
 
 class CognitiveModel:
-    """Thread-safe singleton LightGBM cognitive load inference model.
-
-    Loads a pre-trained LightGBM pipeline from disk. Falls back to the
-    heuristic model when the file is absent or cannot be loaded.
-
-    The model expects Z-score normalised feature vectors produced by
-    :class:`~backend.features.normalizer.FeatureNormalizer`.
-
-    Attributes:
-        _instance: Class-level singleton reference.
-        _lock: Threading lock guarding singleton creation.
-    """
+    """Thread-safe singleton LightGBM cognitive load inference model."""
 
     _instance: Optional["CognitiveModel"] = None
     _lock: threading.Lock = threading.Lock()
 
-    def __init__(self, model_path: Path = DEFAULT_MODEL_PATH) -> None:
-        """Initialises the cognitive model.
-
-        Args:
-            model_path: Path to the ``joblib``-serialised LightGBM pipeline.
-        """
+    def __init__(self, model_path: Optional[Path] = None) -> None:
+        if model_path is None:
+            model_path = get_model_path(MLConstants.COGNITIVE_MODEL_NAME)
         self._model_path = model_path
         self._model, self._is_fallback = self._load_model(model_path)
         self._model_version = "1.0.0-fallback" if self._is_fallback else "1.0.0"
@@ -205,17 +163,7 @@ class CognitiveModel:
         return _FallbackCognitiveModel(), True
 
     @classmethod
-    def get_instance(
-        cls, model_path: Path = DEFAULT_MODEL_PATH
-    ) -> "CognitiveModel":
-        """Returns the singleton :class:`CognitiveModel` instance.
-
-        Args:
-            model_path: Forwarded to ``__init__`` on first call.
-
-        Returns:
-            CognitiveModel: Shared singleton.
-        """
+    def get_instance(cls, model_path: Optional[Path] = None) -> "CognitiveModel":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -231,7 +179,7 @@ class CognitiveModel:
 
         Args:
             feature_vector: NumPy array of shape (21,), dtype float32,
-                normalised by :class:`~backend.features.normalizer.FeatureNormalizer`.
+                normalised by FeatureNormalizer.
 
         Returns:
             CognitiveResult: Predicted attention, stress, CLI, and flags.
@@ -242,7 +190,12 @@ class CognitiveModel:
             return self._model.predict(x.squeeze(0))
 
         try:
-            predictions = self._model.predict(x)  # shape (1, 3) or (1,)
+            # Suppress sklearn feature-name warnings when model was trained with
+            # a DataFrame but we pass a plain numpy array at inference time.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*feature names.*")
+                predictions = self._model.predict(x)  # shape (1, 3) or (1,)
+
             if predictions.ndim == 2 and predictions.shape[1] == 3:
                 attention = float(np.clip(predictions[0, 0], 0.0, 100.0))
                 stress = float(np.clip(predictions[0, 1], 0.0, 100.0))
@@ -273,19 +226,11 @@ class CognitiveModel:
             )
         except Exception as exc:
             logger.error("CognitiveModel.predict failed: %s. Using fallback.", exc)
-            return self._load_model(Path(""))[0].predict(x.squeeze(0))
+            # Instantiate a fresh fallback rather than reloading from an empty path
+            return _FallbackCognitiveModel().predict(x.squeeze(0))
 
-    def predict_batch(
-        self, feature_matrix: np.ndarray
-    ) -> List[CognitiveResult]:
-        """Runs inference on an (N, 21) feature matrix.
-
-        Args:
-            feature_matrix: Array of shape (N, 21), dtype float32.
-
-        Returns:
-            List[CognitiveResult]: N results in input order.
-        """
+    def predict_batch(self, feature_matrix: np.ndarray) -> List[CognitiveResult]:
+        """Runs inference on an (N, 21) feature matrix."""
         return [self.predict(row) for row in feature_matrix]
 
     @property

@@ -28,35 +28,19 @@ from typing import Annotated, Any, Dict
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
-# Fallback imports to support both execution roots
-try:
-    from backend.services.face_auth_service import FaceAuthService
-    from backend.schemas.auth_schema import (
-        AuthenticationHealth,
-        EnrollRequest,
-        EnrollResponse,
-        IdentifyRequest,
-        IdentifyResponse,
-        DriverCandidate,
-        VerifyRequest,
-        VerifyResponse,
-    )
-    from backend.repositories.face_repository import FaceRepository
-    from backend.ml.inference.mobilefacenet_model import MobileFaceNetModel
-except ImportError:
-    from services.face_auth_service import FaceAuthService
-    from schemas.auth_schema import (
-        AuthenticationHealth,
-        EnrollRequest,
-        EnrollResponse,
-        IdentifyRequest,
-        IdentifyResponse,
-        DriverCandidate,
-        VerifyRequest,
-        VerifyResponse,
-    )
-    from repositories.face_repository import FaceRepository
-    from ml.inference.mobilefacenet_model import MobileFaceNetModel
+from backend.services.face_auth_service import FaceAuthService
+from backend.schemas.auth_schema import (
+    AuthenticationHealth,
+    EnrollRequest,
+    EnrollResponse,
+    IdentifyRequest,
+    IdentifyResponse,
+    DriverCandidate,
+    VerifyRequest,
+    VerifyResponse,
+)
+from backend.repositories.face_repository import FaceRepository
+from backend.ml.inference.mobilefacenet_model import MobileFaceNetModel
 
 logger = logging.getLogger("CogniDrive.AuthRouter")
 

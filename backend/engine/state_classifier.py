@@ -10,11 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-# Project imports with fallback
-try:
-    from backend.database.models.driving_metrics import DriverState
-except ImportError:
-    from database.models.driving_metrics import DriverState  # type: ignore[no-redef]
+from backend.database.models.driving_metrics import DriverState
 
 logger = logging.getLogger("CogniDrive.StateClassifier")
 

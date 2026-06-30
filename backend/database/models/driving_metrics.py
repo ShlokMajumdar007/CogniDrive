@@ -6,17 +6,10 @@ import numpy as np
 from sqlalchemy import CheckConstraint, DateTime, Enum as SAEnum, Float, ForeignKey, Index, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.base import Base, TimestampMixin, UUIDMixin
-except ImportError:
-    from database.base import Base, TimestampMixin, UUIDMixin
+from backend.database.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
-    try:
-        from backend.database.models.session_data import SessionData
-    except ImportError:
-        from database.models.session_data import SessionData
+    from backend.database.models.session_data import SessionData
 
 
 class DriverState(str, PyEnum):
@@ -41,10 +34,10 @@ class DrivingMetric(Base, TimestampMixin, UUIDMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
     # Foreign key referencing parent session
+    # index=True removed here; index is declared in __table_args__ below
     session_id: Mapped[int] = mapped_column(
         ForeignKey("driver_sessions.id", ondelete="CASCADE", name="fk_driving_metrics_session_id"),
         nullable=False,
-        index=True,
     )
 
     # Frame timing
@@ -85,11 +78,10 @@ class DrivingMetric(Base, TimestampMixin, UUIDMixin):
     aggression_score: Mapped[float] = mapped_column(Float, nullable=False)
     risk_score: Mapped[float] = mapped_column(Float, nullable=False)
 
-    # Driver State
+    # Driver State — index=True removed; declared in __table_args__
     driver_state: Mapped[DriverState] = mapped_column(
         SAEnum(DriverState),
         nullable=False,
-        index=True,
     )
 
     # Relationships
@@ -99,7 +91,7 @@ class DrivingMetric(Base, TimestampMixin, UUIDMixin):
         foreign_keys=[session_id],
     )
 
-    # Constraints and Indexes
+    # Constraints and Indexes — single authoritative source for all indexes
     __table_args__ = (
         Index("ix_driving_metrics_session_id", "session_id"),
         Index("ix_driving_metrics_timestamp", "metric_timestamp"),
@@ -134,11 +126,7 @@ class DrivingMetric(Base, TimestampMixin, UUIDMixin):
         return self.cli > 70.0 or self.driver_state == DriverState.OVERLOADED
 
     def compute_alert_level(self) -> str:
-        """Evaluates numerical danger levels to trigger matching auditory alerts.
-
-        Returns:
-            str: Risk designation ('LOW', 'MEDIUM', 'HIGH', or 'CRITICAL').
-        """
+        """Evaluates numerical danger levels to trigger matching auditory alerts."""
         score = self.risk_score
         if score < 0.30:
             return "LOW"
@@ -150,11 +138,7 @@ class DrivingMetric(Base, TimestampMixin, UUIDMixin):
             return "CRITICAL"
 
     def to_feature_vector(self) -> List[float]:
-        """Flattens primary metrics parameters into an ordered vector for ML processors.
-
-        Returns:
-            List[float]: Parameter coordinates matching ML sequence order.
-        """
+        """Flattens primary metrics parameters into an ordered vector for ML processors."""
         return [
             self.ear,
             self.mar,
@@ -177,11 +161,7 @@ class DrivingMetric(Base, TimestampMixin, UUIDMixin):
         ]
 
     def to_numpy(self) -> np.ndarray:
-        """Converts driver feature coordinates to a float32 NumPy array.
-
-        Returns:
-            np.ndarray: Vector array matching model configurations.
-        """
+        """Converts driver feature coordinates to a float32 NumPy array."""
         return np.array(self.to_feature_vector(), dtype=np.float32)
 
     def to_dict(self) -> Dict[str, Any]:

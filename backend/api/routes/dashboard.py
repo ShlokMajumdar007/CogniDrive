@@ -8,11 +8,6 @@ Exposes three endpoints:
 
 All operations run entirely offline.  The SSE endpoint integrates with the
 PipelineManager singleton to push sub-second updates to the HMI frontend.
-
-Error handling:
-    - 404 Not Found    — Session or driver not found.
-    - 503 Unavailable  — Database or pipeline not ready.
-    - 500 Server Error — Unexpected aggregation or streaming failures.
 """
 
 from __future__ import annotations
@@ -27,12 +22,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-try:
-    from backend.services.dashboard_service import DashboardService
-    from backend.app.dependencies import get_pipeline_manager
-except ImportError:
-    from services.dashboard_service import DashboardService  # type: ignore[no-redef]
-    from app.dependencies import get_pipeline_manager  # type: ignore[no-redef]
+from backend.services.dashboard_service import DashboardService
+from backend.app.dependencies import get_pipeline_manager
 
 logger = logging.getLogger("CogniDrive.DashboardRouter")
 
@@ -41,7 +32,7 @@ router = APIRouter(
     tags=["HMI Dashboard"],
 )
 
-# SSE heartbeat interval in seconds — keeps the TCP connection alive between frames
+# SSE heartbeat interval in seconds
 _SSE_HEARTBEAT_INTERVAL: float = 2.0
 # Maximum inactivity duration for an SSE connection (seconds)
 _SSE_MAX_IDLE: float = 300.0
@@ -89,8 +80,7 @@ def _get_dashboard_service(
     description=(
         "Returns computed session averages (attention, stress, CLI, risk score) "
         "together with event counts (fatigue, distraction, aggression) for the "
-        "given session.  For active sessions the aggregates are recalculated "
-        "on demand from the live DrivingMetric records."
+        "given session."
     ),
     response_description="Session summary payload.",
 )
@@ -98,19 +88,6 @@ async def session_summary(
     session_id: int,
     service: DashboardService = Depends(_get_dashboard_service),
 ) -> Dict[str, Any]:
-    """Aggregate and return session metrics for dashboard display.
-
-    Args:
-        session_id: Primary key of the target ``SessionData`` row.
-        service: Injected ``DashboardService``.
-
-    Returns:
-        Dict[str, Any]: Aggregated session metrics.
-
-    Raises:
-        HTTPException 404: Session not found.
-        HTTPException 500: Aggregation failure.
-    """
     try:
         summary = service.get_session_summary(session_id=session_id)
     except Exception as exc:
@@ -143,7 +120,7 @@ async def session_summary(
     description=(
         "Returns lifetime aggregate statistics from the DriverProfile record: "
         "total sessions, total distance, average risk factor, baseline metrics, "
-        "and calculated overall risk score.  Used by the driver profile dashboard panel."
+        "and calculated overall risk score."
     ),
     response_description="Driver historical summary payload.",
 )
@@ -151,19 +128,6 @@ async def driver_history(
     driver_id: int,
     service: DashboardService = Depends(_get_dashboard_service),
 ) -> Dict[str, Any]:
-    """Retrieve historical totals and profile stats for a driver.
-
-    Args:
-        driver_id: Primary key of the target ``DriverProfile``.
-        service: Injected ``DashboardService``.
-
-    Returns:
-        Dict[str, Any]: Driver historical profile data.
-
-    Raises:
-        HTTPException 404: Driver not found.
-        HTTPException 500: Retrieval failure.
-    """
     try:
         summary = service.get_driver_historical_summary(driver_id=driver_id)
     except Exception as exc:
@@ -198,12 +162,10 @@ async def _biometric_sse_generator(
     Pushes a JSON payload every 100ms while the HTTP connection is alive.
     Falls back to a heartbeat comment when no new frame data is available.
 
-    Args:
-        driver_id: Target driver to filter telemetry from.
-        request: FastAPI Request (used to detect client disconnect).
-
-    Yields:
-        str: SSE-formatted event strings.
+    The generator reads ``pipeline.last_prediction`` (a plain dict) which is
+    updated by PipelineManager.process_frame() after every processed frame.
+    It uses the ``frame_number`` key inside that dict to detect new frames and
+    avoid re-sending the same prediction twice.
     """
     pipeline = None
     try:
@@ -212,7 +174,7 @@ async def _biometric_sse_generator(
         logger.warning("DashboardRouter SSE: PipelineManager unavailable — %s", exc)
 
     start_ts = time.monotonic()
-    last_frame: Optional[int] = None
+    last_frame_number: Optional[int] = None
 
     while True:
         # Abort if client disconnected
@@ -228,11 +190,13 @@ async def _biometric_sse_generator(
         payload: Optional[Dict[str, Any]] = None
         if pipeline is not None:
             try:
-                cached = getattr(pipeline, "last_prediction", None)
+                # last_prediction is always a dict or None (set in PipelineManager)
+                cached: Optional[Dict[str, Any]] = getattr(pipeline, "last_prediction", None)
                 if cached and isinstance(cached, dict):
                     cur_frame = cached.get("frame_number")
-                    if cur_frame != last_frame:
-                        last_frame = cur_frame
+                    # Only emit when a genuinely new frame has been processed
+                    if cur_frame is not None and cur_frame != last_frame_number:
+                        last_frame_number = cur_frame
                         payload = cached
             except Exception as exc:
                 logger.debug("DashboardRouter SSE: pipeline read error: %s", exc)
@@ -270,15 +234,7 @@ async def metrics_stream(
     request: Request,
     driver_id: int = Query(..., description="Primary key of the active DriverProfile", ge=1),
 ) -> StreamingResponse:
-    """Open a live SSE stream of biometric metrics from the PipelineManager.
-
-    Args:
-        request: FastAPI Request object (for disconnect detection).
-        driver_id: Active driver to scope the stream to.
-
-    Returns:
-        StreamingResponse: ``text/event-stream`` response.
-    """
+    """Open a live SSE stream of biometric metrics from the PipelineManager."""
     generator = _biometric_sse_generator(driver_id=driver_id, request=request)
     return StreamingResponse(
         generator,

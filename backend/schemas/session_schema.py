@@ -2,11 +2,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator, computed_field, ConfigDict
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.models.session_data import SessionStatus
-except ImportError:
-    from database.models.session_data import SessionStatus
+from backend.database.models.session_data import SessionStatus
 
 
 class SessionBase(BaseModel):

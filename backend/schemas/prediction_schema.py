@@ -3,11 +3,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict, computed_field, field_validator, model_validator
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.models.driving_metrics import DriverState
-except ImportError:
-    from database.models.driving_metrics import DriverState
+from backend.database.models.driving_metrics import DriverState
 
 
 class PredictionRequest(BaseModel):

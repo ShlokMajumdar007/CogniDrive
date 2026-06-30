@@ -29,8 +29,10 @@ try:
 except ImportError:
     _SKLEARN_AVAILABLE = False
 
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+
 FEATURE_DIM: int = 21
-DEFAULT_MODEL_PATH: Path = Path("backend/ml/models_saved/anomaly_isolation_forest.joblib")
 
 
 @dataclass
@@ -113,8 +115,10 @@ class AnomalyEngine:
     _instance: Optional["AnomalyEngine"] = None
     _lock: threading.Lock = threading.Lock()
 
-    def __init__(self, model_path: Path = DEFAULT_MODEL_PATH) -> None:
+    def __init__(self, model_path: Optional[Path] = None) -> None:
         """Initializes the AnomalyEngine by loading the Isolation Forest model."""
+        if model_path is None:
+            model_path = get_model_path(MLConstants.ANOMALY_MODEL_NAME)
         self._model_path = model_path
         self._model, self._is_fallback = self._load_model(model_path)
         self._model_version = "1.0.0-fallback" if self._is_fallback else "1.0.0"
@@ -137,7 +141,7 @@ class AnomalyEngine:
         return _HeuristicAnomalyDetector(), True
 
     @classmethod
-    def get_instance(cls, model_path: Path = DEFAULT_MODEL_PATH) -> "AnomalyEngine":
+    def get_instance(cls, model_path: Optional[Path] = None) -> "AnomalyEngine":
         """Returns the singleton AnomalyEngine instance."""
         if cls._instance is None:
             with cls._lock:

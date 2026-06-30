@@ -48,18 +48,11 @@ from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-try:
-    from backend.digital_twin.personalization import (
-        AdaptiveThreshold,
-        TrackedSignal,
-        _global_defaults,
-    )
-except ImportError:
-    from digital_twin.personalization import (  # type: ignore[no-redef]
-        AdaptiveThreshold,
-        TrackedSignal,
-        _global_defaults,
-    )
+from backend.digital_twin.personalization import (
+    AdaptiveThreshold,
+    TrackedSignal,
+    _global_defaults,
+)
 
 
 

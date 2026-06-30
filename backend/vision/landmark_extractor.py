@@ -30,6 +30,16 @@ from typing import List, Optional, Tuple
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe import Image as MpImage
+from mediapipe import ImageFormat as MpImageFormat
+from mediapipe.tasks.python.core import base_options as mp_base_options
+from mediapipe.tasks.python.vision import face_landmarker as mp_face_landmarker
+from mediapipe.tasks.python.vision.core import vision_task_running_mode as mp_running_mode
+
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+
+_DEFAULT_LANDMARKER_MODEL = get_model_path(MLConstants.FACE_LANDMARKER_MODEL_NAME)
 
 logger = logging.getLogger(__name__)
 
@@ -223,27 +233,66 @@ class LandmarkExtractor:
         self._min_tracking_confidence = min_tracking_confidence
         self._max_num_faces = max_num_faces
         self._refine_landmarks = refine_landmarks
+        self._face_mesh = None
+        self._backend = "none"
 
-        try:
-            self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=max_num_faces,
-                refine_landmarks=refine_landmarks,
-                min_detection_confidence=min_detection_confidence,
-                min_tracking_confidence=min_tracking_confidence,
-            )
+        model_path = _DEFAULT_LANDMARKER_MODEL
+        if hasattr(mp, "solutions"):
+            try:
+                self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+                    static_image_mode=False,
+                    max_num_faces=max_num_faces,
+                    refine_landmarks=refine_landmarks,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence,
+                )
+                self._backend = "solutions"
+            except Exception as exc:
+                logger.warning("MediaPipe solutions FaceMesh failed: %s", exc)
+
+        if self._face_mesh is None:
+            if not model_path.exists():
+                logger.warning(
+                    "Face landmarker model not found at %s. "
+                    "Download face_landmarker.task from MediaPipe model zoo into MODEL_DIR. "
+                    "Vision pipeline will return no face detections until the model is available.",
+                    model_path,
+                )
+            else:
+                try:
+                    options = mp_face_landmarker.FaceLandmarkerOptions(
+                        base_options=mp_base_options.BaseOptions(
+                            model_asset_path=str(model_path)
+                        ),
+                        running_mode=mp_running_mode.VisionTaskRunningMode.IMAGE,
+                        num_faces=max_num_faces,
+                        min_face_detection_confidence=min_detection_confidence,
+                        min_face_presence_confidence=min_tracking_confidence,
+                        min_tracking_confidence=min_tracking_confidence,
+                        output_face_blendshapes=False,
+                        output_facial_transformation_matrixes=False,
+                    )
+                    self._face_mesh = mp_face_landmarker.FaceLandmarker.create_from_options(
+                        options
+                    )
+                    self._backend = "tasks"
+                except Exception as exc:
+                    logger.warning("MediaPipe FaceLandmarker tasks init failed: %s", exc)
+
+        if self._face_mesh is not None:
             logger.info(
-                "LandmarkExtractor initialised — max_faces=%d, refine=%s, "
+                "LandmarkExtractor initialised — backend=%s, max_faces=%d, refine=%s, "
                 "det_conf=%.2f, track_conf=%.2f",
+                self._backend,
                 max_num_faces,
                 refine_landmarks,
                 min_detection_confidence,
                 min_tracking_confidence,
             )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to initialise MediaPipe FaceMesh: {exc}"
-            ) from exc
+        else:
+            logger.warning(
+                "LandmarkExtractor running in degraded mode — no face landmark backend available."
+            )
 
     # ------------------------------------------------------------------
     # Singleton
@@ -306,28 +355,39 @@ class LandmarkExtractor:
             return LandmarkResult(is_valid=False)
 
         h, w = frame.shape[:2]
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-
-        mp_result = self._face_mesh.process(rgb)
-
-        if not mp_result.multi_face_landmarks:
+        if self._face_mesh is None:
             return LandmarkResult(is_valid=False, frame_width=w, frame_height=h)
 
-        # Use the first detected face only
-        face = mp_result.multi_face_landmarks[0]
-        lm = face.landmark  # list of NormalizedLandmark
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        if self._backend == "solutions":
+            rgb.flags.writeable = False
+            mp_result = self._face_mesh.process(rgb)
+            if not mp_result.multi_face_landmarks:
+                return LandmarkResult(is_valid=False, frame_width=w, frame_height=h)
+            face = mp_result.multi_face_landmarks[0]
+            lm = face.landmark
+        else:
+            mp_image = MpImage(
+                image_format=MpImageFormat.SRGB,
+                data=np.ascontiguousarray(rgb),
+            )
+            mp_result = self._face_mesh.detect(mp_image)
+            if not mp_result.face_landmarks:
+                return LandmarkResult(is_valid=False, frame_width=w, frame_height=h)
+            lm = mp_result.face_landmarks[0]
 
         # Build full (468 + 10 iris) array in normalised space
         total = len(lm)
         all_lm = np.array(
-            [(lm[i].x, lm[i].y, lm[i].z) for i in range(total)],
+            [(point.x, point.y, point.z) for point in lm],
             dtype=np.float32,
         )
 
         def _px(idx: int) -> Tuple[float, float]:
             """Converts normalised landmark to pixel coordinates."""
-            return float(lm[idx].x * w), float(lm[idx].y * h)
+            point = lm[idx]
+            return float(point.x * w), float(point.y * h)
 
         left_eye = [_px(i) for i in LEFT_EYE_INDICES]
         right_eye = [_px(i) for i in RIGHT_EYE_INDICES]
@@ -378,7 +438,8 @@ class LandmarkExtractor:
         memory held by the underlying MediaPipe graph.
         """
         try:
-            self._face_mesh.close()
+            if self._backend == "solutions" and hasattr(self._face_mesh, "close"):
+                self._face_mesh.close()
             logger.info("LandmarkExtractor closed and resources released.")
         except Exception as exc:
             logger.warning("Error closing LandmarkExtractor: %s", exc)

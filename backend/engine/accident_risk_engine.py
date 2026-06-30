@@ -11,13 +11,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-# Project imports with fallback
-try:
-    from backend.ml.inference.risk_model import RiskModel, RiskResult
-    from backend.ml.inference.cognitive_model import CognitiveResult
-except ImportError:
-    from ml.inference.risk_model import RiskModel, RiskResult  # type: ignore[no-redef]
-    from ml.inference.cognitive_model import CognitiveResult  # type: ignore[no-redef]
+from backend.ml.inference.risk_model import RiskModel, RiskResult
+from backend.ml.inference.cognitive_model import CognitiveResult
 
 logger = logging.getLogger("CogniDrive.AccidentRiskEngine")
 

@@ -4,11 +4,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import CheckConstraint, Enum as SAEnum, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
-except ImportError:
-    from database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
+from backend.database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
 
 
 class DrivingStyle(str, PyEnum):

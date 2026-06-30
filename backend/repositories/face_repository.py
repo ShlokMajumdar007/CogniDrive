@@ -34,15 +34,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from sqlalchemy.orm import Session
 
-# Fallback imports
-try:
-    from backend.database.models.face_enrollment import FaceEnrollment
-    from backend.database.models.embeddings import DriverEmbedding
-    from backend.database.models.driver_profile import DriverProfile
-except ImportError:
-    from database.models.face_enrollment import FaceEnrollment
-    from database.models.embeddings import DriverEmbedding
-    from database.models.driver_profile import DriverProfile
+from backend.database.models.face_enrollment import FaceEnrollment
+from backend.database.models.embeddings import DriverEmbedding
+from backend.database.models.driver_profile import DriverProfile
 
 logger = logging.getLogger("CogniDrive.FaceRepository")
 

@@ -1,6 +1,6 @@
 """PredictionService — Service layer coordinating driver state and risk predictions.
 
-Acts as the service layer handling real-time camera frame inference, historical 
+Acts as the service layer handling real-time camera frame inference, historical
 predictions lookup, and pipeline synchronization.
 """
 
@@ -11,13 +11,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from sqlalchemy.orm import Session
 
-# Project imports with fallback
-try:
-    from backend.app.dependencies import get_pipeline_manager
-    from backend.database.models.driving_metrics import DrivingMetric
-except ImportError:
-    from app.dependencies import get_pipeline_manager  # type: ignore[no-redef]
-    from database.models.driving_metrics import DrivingMetric  # type: ignore[no-redef]
+from backend.app.dependencies import get_pipeline_manager
+from backend.database.models.driving_metrics import DrivingMetric
 
 logger = logging.getLogger("CogniDrive.PredictionService")
 
@@ -46,13 +41,17 @@ class PredictionService:
     ) -> Dict[str, Any]:
         """Submits a single camera frame to the PipelineManager for full inference.
 
+        Binds the current database session and driver/session IDs to the pipeline
+        singleton before calling process_frame() so that DB writes use the correct
+        request-scoped session.
+
         Args:
             driver_id: Primary key of the driver.
             session_id: Active session ID.
             frame: Numpy BGR frame array.
             frame_number: Sequential frame index.
             frame_time_ms: Timestamp in milliseconds.
-            telemetry: Telemetry inputs.
+            telemetry: Optional vehicle telemetry dict.
 
         Returns:
             Dict containing predictions, metrics, recommendations and detected flags.
@@ -60,17 +59,19 @@ class PredictionService:
         if self._pipeline_manager is None:
             raise RuntimeError("PipelineManager not initialized.")
 
-        # Ensure pipeline is bound to this database session
+        # Bind request-scoped DB session and active IDs to the pipeline singleton
         self._pipeline_manager.db_session = self._db
         self._pipeline_manager.active_driver_id = driver_id
         self._pipeline_manager.active_session_id = session_id
 
-        return self._pipeline_manager.process_frame(
+        result = self._pipeline_manager.process_frame(
             frame=frame,
             frame_number=frame_number,
             frame_time_ms=frame_time_ms,
             telemetry=telemetry,
         )
+
+        return result
 
     def get_session_prediction_history(self, session_id: int) -> List[Dict[str, Any]]:
         """Retrieves fine-grained time-series prediction metrics for a session.

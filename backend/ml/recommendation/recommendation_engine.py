@@ -10,13 +10,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
-# Project imports with fallback
-try:
-    from backend.database.models.recommendations import RecommendationType, PriorityLevel
-    from backend.app.constants import Recommendations
-except ImportError:
-    from database.models.recommendations import RecommendationType, PriorityLevel  # type: ignore[no-redef]
-    from app.constants import Recommendations  # type: ignore[no-redef]
+from backend.database.models.recommendations import RecommendationType, PriorityLevel
+from backend.app.constants import Recommendations
 
 logger = logging.getLogger("CogniDrive.RecommendationEngine")
 

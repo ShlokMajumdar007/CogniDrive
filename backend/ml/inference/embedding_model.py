@@ -29,6 +29,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,13 +50,9 @@ except ImportError:
     _JOBLIB_AVAILABLE = False
     logger.warning("joblib not installed — EmbeddingModel will use fallback PCA.")
 
-try:
-    from backend.app.config import get_settings
-    from backend.app.constants import MLConstants
-except ImportError:
-    from app.config import get_settings
-    from app.constants import MLConstants
-
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+from backend.ml.inference.encoder_transformer import EncoderTransformer, _EncoderTransformer
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -63,9 +60,6 @@ except ImportError:
 
 EMBEDDING_DIM: int = 128
 FEATURE_DIM: int = 21
-
-#: Default path where the trained encoder pipeline is stored.
-DEFAULT_MODEL_PATH: Path = Path("backend/ml/models/embedding_encoder.joblib")
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +183,7 @@ class EmbeddingModel:
             model_path: Path to the ``joblib``-serialised encoder pipeline.
         """
         if model_path is None:
-            try:
-                settings = get_settings()
-                model_path = Path(settings.MODEL_DIR) / MLConstants.EMBEDDING_MODEL_NAME.value
-            except Exception:
-                model_path = DEFAULT_MODEL_PATH
+            model_path = get_model_path(MLConstants.EMBEDDING_MODEL_NAME)
         self._model_path = model_path
         self._encoder, self._is_fallback = self._load_encoder(model_path)
         self._model_version: str = "1.0.0-fallback" if self._is_fallback else "1.0.0"
@@ -202,6 +192,16 @@ class EmbeddingModel:
             self._is_fallback,
             self._model_version,
         )
+
+    @staticmethod
+    def _register_encoder_unpickle_aliases() -> None:
+        """Maps legacy pickle class paths to EncoderTransformer."""
+        import sys
+
+        for mod_name in ("__main__", "backend.ml.training.train_embeddings"):
+            mod = sys.modules.get(mod_name)
+            if mod is not None:
+                mod._EncoderTransformer = _EncoderTransformer
 
     @staticmethod
     def _load_encoder(path: Path):  # type: ignore[return]
@@ -213,6 +213,7 @@ class EmbeddingModel:
         Returns:
             Tuple of (encoder, is_fallback).
         """
+        EmbeddingModel._register_encoder_unpickle_aliases()
         if _JOBLIB_AVAILABLE and path.exists():
             try:
                 encoder = joblib.load(path)

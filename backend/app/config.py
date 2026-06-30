@@ -1,9 +1,13 @@
 import os
 from functools import lru_cache
 import logging
+from pathlib import Path
 from typing import Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_MODEL_DIR = str(_BACKEND_ROOT / "ml" / "models_saved")
 
 # Configure basic logging for settings startup
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +32,10 @@ class Settings(BaseSettings):
     )
 
     # Directories (paths will be created if they do not exist)
-    MODEL_DIR: str = Field(default="models_saved", description="Directory to save/load trained ML models")
+    MODEL_DIR: str = Field(
+        default=_DEFAULT_MODEL_DIR,
+        description="Directory to save/load trained ML models",
+    )
     DATASET_DIR: str = Field(default="datasets", description="Directory for local training datasets")
     LOG_DIR: str = Field(default="logs", description="Directory for general application logs")
 
@@ -47,6 +54,37 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSION: int = Field(
         default=128,
         description="Dimensionality of driver facial structural embeddings",
+    )
+
+    # ---------------------------------------------------------------------------
+    # Drishti-style continuous pipeline settings
+    # ---------------------------------------------------------------------------
+
+    PIPELINE_AUTO_START: bool = Field(
+        default=True,
+        description=(
+            "When True, the LivePipelineRunner starts automatically during FastAPI "
+            "startup, opening the camera and continuously processing frames without "
+            "requiring an external client script."
+        ),
+    )
+
+    PIPELINE_DRIVER_ID: int = Field(
+        default=1,
+        description=(
+            "Default driver ID used by the auto-start LivePipelineRunner session. "
+            "Set to the integer primary key of an existing DriverProfile row, or 1 "
+            "for the built-in demo driver created on first startup."
+        ),
+    )
+
+    PIPELINE_SESSION_ID: int = Field(
+        default=1,
+        description=(
+            "Default session ID used by the auto-start LivePipelineRunner session. "
+            "Set to the integer primary key of an existing SessionData row, or 1 "
+            "for the built-in demo session created on first startup."
+        ),
     )
 
     # Configure Pydantic Settings Source
@@ -80,14 +118,13 @@ class Settings(BaseSettings):
 
 
 @lru_cache()
+def get_model_path(model_name: str) -> Path:
+    """Resolve a model artifact path under the configured MODEL_DIR."""
+    return Path(get_settings().MODEL_DIR) / model_name
+
+
+@lru_cache()
 def get_settings() -> Settings:
-    """Gets cached global settings instance.
-
-    Uses functools.lru_cache to prevent reading the .env file repeatedly
-    across multiple API request cycles.
-
-    Returns:
-        Settings: The instantiated and validated Settings object.
-    """
-    logger.info("Initializing application settings settings from environment/.env")
+    """Gets cached global settings instance."""
+    logger.info("Initializing application settings from environment/.env")
     return Settings()

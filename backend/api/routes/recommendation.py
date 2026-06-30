@@ -22,18 +22,11 @@ from typing import Annotated, Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-try:
-    from backend.services.recommendation_service import RecommendationService
-    from backend.schemas.recommendation_schema import (
-        RecommendationResponse,
-        RecommendationBatchResponse,
-    )
-except ImportError:
-    from services.recommendation_service import RecommendationService  # type: ignore[no-redef]
-    from schemas.recommendation_schema import (  # type: ignore[no-redef]
-        RecommendationResponse,
-        RecommendationBatchResponse,
-    )
+from backend.services.recommendation_service import RecommendationService
+from backend.schemas.recommendation_schema import (
+    RecommendationResponse,
+    RecommendationBatchResponse,
+)
 
 logger = logging.getLogger("CogniDrive.RecommendationRouter")
 

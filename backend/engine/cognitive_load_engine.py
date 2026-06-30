@@ -11,11 +11,7 @@ from typing import Dict, List
 
 import numpy as np
 
-# Project imports with fallback
-try:
-    from backend.ml.inference.cognitive_model import CognitiveModel, CognitiveResult
-except ImportError:
-    from ml.inference.cognitive_model import CognitiveModel, CognitiveResult  # type: ignore[no-redef]
+from backend.ml.inference.cognitive_model import CognitiveModel, CognitiveResult
 
 logger = logging.getLogger("CogniDrive.CognitiveLoadEngine")
 

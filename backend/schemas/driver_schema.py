@@ -2,11 +2,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.models.driver_profile import DrivingStyle, StressSensitivity, RiskTolerance
-except ImportError:
-    from database.models.driver_profile import DrivingStyle, StressSensitivity, RiskTolerance
+from backend.database.models.driver_profile import DrivingStyle, StressSensitivity, RiskTolerance
 
 
 class DriverBase(BaseModel):

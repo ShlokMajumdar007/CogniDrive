@@ -22,7 +22,6 @@ try:
     from sklearn.neural_network import MLPRegressor
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
-    from sklearn.base import BaseEstimator, TransformerMixin
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_squared_error
 except ImportError as exc:  # pragma: no cover - scikit-learn is a hard dependency
@@ -36,14 +35,10 @@ except ImportError as exc:  # pragma: no cover - scikit-learn is a hard dependen
 # direct script execution from within the `backend/` directory.
 # ---------------------------------------------------------------------------
 
-try:
-    from backend.features.feature_vector import FEATURE_DIM, FEATURE_NAMES
-    from backend.app.config import get_settings
-    from backend.app.constants import MLConstants
-except ImportError:
-    from features.feature_vector import FEATURE_DIM, FEATURE_NAMES  # type: ignore[no-redef]
-    from app.config import get_settings  # type: ignore[no-redef]
-    from app.constants import MLConstants  # type: ignore[no-redef]
+from backend.features.feature_vector import FEATURE_DIM, FEATURE_NAMES
+from backend.app.config import get_model_path
+from backend.app.constants import MLConstants
+from backend.ml.inference.encoder_transformer import EncoderTransformer as _EncoderTransformer
 
 
 logger = logging.getLogger("CogniDrive.Training.Embeddings")
@@ -216,137 +211,6 @@ class SyntheticDriverDataGenerator:
         )
         return samples.astype(np.float32)
 
-
-# ---------------------------------------------------------------------------
-# Encoder transformer (encoder half of the trained autoencoder)
-# ---------------------------------------------------------------------------
-
-
-class _EncoderTransformer(BaseEstimator, TransformerMixin):
-    """Wraps the hidden layer of a trained autoencoder as a transformer.
-
-    After an :class:`~sklearn.neural_network.MLPRegressor` autoencoder
-    (``21 -> embedding_dim -> 21``) has been fit, this transformer extracts
-    the hidden-layer (encoder) activations for new inputs without running
-    the decoder half. This is what :class:`EmbeddingModel` calls via
-    ``self._encoder.transform(x)``.
-
-    The transformer is intentionally minimal and picklable via ``joblib``:
-    it stores only the first-layer weight matrix, bias vector, and the
-    activation function name.
-
-    Attributes:
-        coef_: First-layer weight matrix of shape ``(feature_dim, embedding_dim)``.
-        intercept_: First-layer bias vector of shape ``(embedding_dim,)``.
-        activation: Name of the activation function applied after the
-            linear projection (``"relu"`` for the trained encoder).
-        embedding_dim_: Output dimensionality (read-only convenience attr).
-    """
-
-    def __init__(
-        self,
-        coef_: Optional[np.ndarray] = None,
-        intercept_: Optional[np.ndarray] = None,
-        activation: str = "relu",
-    ) -> None:
-        """Initialises the encoder transformer.
-
-        Args:
-            coef_: First-layer weight matrix, shape ``(feature_dim, embedding_dim)``.
-            intercept_: First-layer bias vector, shape ``(embedding_dim,)``.
-            activation: Activation function name applied post-projection.
-        """
-        self.coef_ = coef_
-        self.intercept_ = intercept_
-        self.activation = activation
-
-    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> "_EncoderTransformer":
-        """No-op fit for sklearn API compatibility.
-
-        The encoder weights are populated externally from a trained
-        :class:`~sklearn.neural_network.MLPRegressor`; this method exists
-        purely so the object satisfies the scikit-learn ``Pipeline``
-        transformer contract.
-
-        Args:
-            X: Ignored. Present for API compatibility.
-            y: Ignored. Present for API compatibility.
-
-        Returns:
-            _EncoderTransformer: ``self``.
-
-        Raises:
-            ValueError: If ``coef_`` or ``intercept_`` have not been set.
-        """
-        if self.coef_ is None or self.intercept_ is None:
-            raise ValueError(
-                "_EncoderTransformer requires coef_ and intercept_ to be set "
-                "(via from_mlp()) before it can be used."
-            )
-        return self
-
-    def transform(self, X: np.ndarray) -> np.ndarray:
-        """Projects scaled input features into the embedding space.
-
-        Computes ``activation(X @ coef_ + intercept_)``.
-
-        Args:
-            X: Array of shape ``(n_samples, feature_dim)``, already
-                scaled by the preceding ``StandardScaler`` pipeline step.
-
-        Returns:
-            np.ndarray: Embedding array of shape
-            ``(n_samples, embedding_dim)``, dtype float32.
-
-        Raises:
-            ValueError: If the transformer has not been fitted (weights unset).
-        """
-        if self.coef_ is None or self.intercept_ is None:
-            raise ValueError("_EncoderTransformer is not fitted: missing weights.")
-
-        z = X @ self.coef_ + self.intercept_
-
-        if self.activation == "relu":
-            z = np.maximum(z, 0.0)
-        elif self.activation == "tanh":
-            z = np.tanh(z)
-        elif self.activation == "logistic":
-            z = 1.0 / (1.0 + np.exp(-z))
-        # "identity" -> no-op
-
-        return z.astype(np.float32)
-
-    @property
-    def embedding_dim_(self) -> int:
-        """Returns the output embedding dimensionality."""
-        if self.coef_ is None:
-            return 0
-        return int(self.coef_.shape[1])
-
-    @classmethod
-    def from_mlp(cls, mlp: "MLPRegressor") -> "_EncoderTransformer":
-        """Builds an encoder transformer from a trained autoencoder MLP.
-
-        Args:
-            mlp: A fitted :class:`~sklearn.neural_network.MLPRegressor`
-                with at least one hidden layer, trained as an autoencoder
-                (i.e. ``mlp.fit(X_scaled, X_scaled)``).
-
-        Returns:
-            _EncoderTransformer: Transformer exposing only the first
-            hidden layer's weights as the embedding projection.
-
-        Raises:
-            ValueError: If the MLP has no hidden layers.
-        """
-        if not mlp.coefs_ or not mlp.intercepts_:
-            raise ValueError("MLPRegressor has no learned weights to extract.")
-
-        coef = mlp.coefs_[0].astype(np.float32)
-        intercept = mlp.intercepts_[0].astype(np.float32)
-        activation = mlp.activation
-
-        return cls(coef_=coef, intercept_=intercept, activation=activation)
 
 
 # ---------------------------------------------------------------------------
@@ -610,8 +474,7 @@ def resolve_output_path(explicit_path: Optional[str]) -> Path:
         return Path(explicit_path)
 
     try:
-        settings = get_settings()
-        return Path(settings.MODEL_DIR) / MLConstants.EMBEDDING_MODEL_NAME.value
+        return get_model_path(MLConstants.EMBEDDING_MODEL_NAME)
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.warning(
             "Could not resolve output path from settings (%s); using default "

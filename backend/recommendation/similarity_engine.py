@@ -36,10 +36,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-try:
-    from backend.ml.digital_twin.driver_embedding import EMBEDDING_DIM
-except ImportError:
-    from ml.digital_twin.driver_embedding import EMBEDDING_DIM  # type: ignore[no-redef]
+from backend.ml.digital_twin.driver_embedding import EMBEDDING_DIM
 
 
 # ---------------------------------------------------------------------------

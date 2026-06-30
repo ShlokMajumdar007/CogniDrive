@@ -34,10 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-try:
-    from backend.features.feature_vector import FEATURE_NAMES
-except ImportError:
-    from features.feature_vector import FEATURE_NAMES
+from backend.features.feature_vector import FEATURE_NAMES
 
 logger = logging.getLogger("CogniDrive.PersonalizationManager")
 

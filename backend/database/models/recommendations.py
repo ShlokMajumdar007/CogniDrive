@@ -5,17 +5,10 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum as SAEnum, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
-except ImportError:
-    from database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
+from backend.database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
 
 if TYPE_CHECKING:
-    try:
-        from backend.database.models.driver_profile import DriverProfile
-    except ImportError:
-        from database.models.driver_profile import DriverProfile
+    from backend.database.models.driver_profile import DriverProfile
 
 
 class RecommendationType(str, PyEnum):
@@ -50,41 +43,33 @@ class RecommendationStatus(str, PyEnum):
 
 
 class Recommendation(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
-    """Stores actionable guidance instructions and safety alerts generated entirely offline.
-
-    Tracks metric derivations relative to individual driver baselines to back the
-    explainability dashboard displays and reinforce future ML training models.
-    """
+    """Stores actionable guidance instructions and safety alerts generated entirely offline."""
 
     __tablename__ = "recommendations"
 
     # Primary key
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    # Foreign key referencing parent driver profile
+    # Foreign key — index=True removed; declared in __table_args__
     driver_id: Mapped[int] = mapped_column(
         ForeignKey("driver_profiles.id", ondelete="CASCADE", name="fk_recommendations_driver_id"),
         nullable=False,
-        index=True,
     )
 
-    # Enum details
+    # Enum details — index=True removed; declared in __table_args__
     recommendation_type: Mapped[RecommendationType] = mapped_column(
         SAEnum(RecommendationType),
         nullable=False,
-        index=True,
     )
     priority: Mapped[PriorityLevel] = mapped_column(
         SAEnum(PriorityLevel),
         nullable=False,
-        index=True,
     )
     status: Mapped[RecommendationStatus] = mapped_column(
         SAEnum(RecommendationStatus),
         nullable=False,
         default=RecommendationStatus.PENDING,
         server_default="PENDING",
-        index=True,
     )
 
     # Core payloads
@@ -115,7 +100,7 @@ class Recommendation(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
         foreign_keys=[driver_id],
     )
 
-    # Constraints and Indexes
+    # Constraints and Indexes — single authoritative source
     __table_args__ = (
         Index("ix_recommendations_driver_id", "driver_id"),
         Index("ix_recommendations_status", "status"),
@@ -130,64 +115,41 @@ class Recommendation(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
     )
 
     def mark_as_displayed(self) -> None:
-        """Sets the recommendation status to DISPLAYED once rendered on dashboards."""
         if self.status == RecommendationStatus.PENDING:
             self.status = RecommendationStatus.DISPLAYED
 
     def mark_as_read(self) -> None:
-        """Sets the is_read status to True."""
         self.is_read = True
 
     def acknowledge(self) -> None:
-        """Flags the recommendation status as ACKNOWLEDGED by the driver."""
         self.status = RecommendationStatus.ACKNOWLEDGED
         self.is_read = True
         self.acknowledged_at = datetime.now(timezone.utc)
 
     def dismiss(self) -> None:
-        """Flags the recommendation status as DISMISSED by the driver."""
         self.status = RecommendationStatus.DISMISSED
         self.is_read = True
 
     def expire(self) -> None:
-        """Wipes active status flags when timestamp validation expires."""
         self.status = RecommendationStatus.EXPIRED
 
     def is_expired(self) -> bool:
-        """Verifies if current time has passed the configured recommendation lifespan.
-
-        Returns:
-            bool: True if recommendation has expired, False otherwise.
-        """
         if self.expires_at is None:
             return False
-        # Treat naive timestamps as UTC
         now = datetime.now(timezone.utc)
         return now > self.expires_at
 
     def is_critical(self) -> bool:
-        """Determines if the priority maps to severe status risk levels.
-
-        Returns:
-            bool: True if severity level matches CRITICAL or HIGH.
-        """
         return self.priority in (PriorityLevel.HIGH, PriorityLevel.CRITICAL)
 
     def generate_summary(self) -> str:
-        """Generates a brief summary text representing priority and event triggers.
-
-        Returns:
-            str: Compiled summary text.
-        """
         severity_label = self.priority.value
-        # Calculate deviation percentage if triggers are populated
         if self.trigger_value is not None and self.baseline_value is not None and self.baseline_value > 0.0:
             deviation = ((self.trigger_value - self.baseline_value) / self.baseline_value) * 100.0
             deviation_sign = "+" if deviation >= 0.0 else ""
             summary_info = f"{self.trigger_metric} changed by {deviation_sign}{deviation:.1f}%"
         else:
             summary_info = self.title
-
         return f"[{severity_label}] {summary_info}"
 
     def to_dict(self) -> Dict[str, Any]:

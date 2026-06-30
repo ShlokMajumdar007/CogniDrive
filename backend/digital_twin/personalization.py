@@ -60,12 +60,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-try:
-    from backend.ml.digital_twin.driver_embedding import WelfordState
-    from backend.app.constants import Thresholds
-except ImportError:
-    from ml.digital_twin.driver_embedding import WelfordState  # type: ignore[no-redef]
-    from app.constants import Thresholds  # type: ignore[no-redef]
+from backend.ml.digital_twin.driver_embedding import WelfordState
+from backend.app.constants import Thresholds
 
 
 # ---------------------------------------------------------------------------

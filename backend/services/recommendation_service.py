@@ -12,11 +12,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-# Project imports with fallback
-try:
-    from backend.database.models.recommendations import Recommendation, RecommendationStatus
-except ImportError:
-    from database.models.recommendations import Recommendation, RecommendationStatus  # type: ignore[no-redef]
+from backend.database.models.recommendations import Recommendation, RecommendationStatus
 
 logger = logging.getLogger("CogniDrive.RecommendationService")
 

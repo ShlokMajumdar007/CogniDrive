@@ -119,6 +119,7 @@ class MLConstants:
     RISK_MODEL_NAME: str = "accident_risk_lgb.joblib"
     EMBEDDING_MODEL_NAME: str = "driver_face_encoder.joblib"
     ANOMALY_MODEL_NAME: str = "anomaly_isolation_forest.joblib"
+    FACE_LANDMARKER_MODEL_NAME: str = "face_landmarker.task"
 
 
 # Advisory Recommendations

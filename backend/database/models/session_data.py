@@ -6,19 +6,11 @@ import uuid
 from sqlalchemy import CheckConstraint, DateTime, Enum as SAEnum, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-# Fallback imports to support different run paths
-try:
-    from backend.database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
-except ImportError:
-    from database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
+from backend.database.base import Base, TimestampMixin, UUIDMixin, SoftDeleteMixin
 
 if TYPE_CHECKING:
-    try:
-        from backend.database.models.driver_profile import DriverProfile
-        from backend.database.models.driving_metrics import DrivingMetric
-    except ImportError:
-        from database.models.driver_profile import DriverProfile
-        from database.models.driving_metrics import DrivingMetric
+    from backend.database.models.driver_profile import DriverProfile
+    from backend.database.models.driving_metrics import DrivingMetric
 
 
 class SessionStatus(str, PyEnum):
@@ -30,29 +22,24 @@ class SessionStatus(str, PyEnum):
 
 
 class SessionData(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
-    """Represents a single complete driving session (trip).
-
-    Aggregates driver status counts, time duration, alerts, and average scores.
-    Acts as the parent entity referencing fine-grained 30fps DrivingMetric records.
-    """
+    """Represents a single complete driving session (trip)."""
 
     __tablename__ = "driver_sessions"
 
     # Primary key
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    # Identifiers
+    # Identifiers — unique=True is kept; index=True removed (declared in __table_args__)
     session_uuid: Mapped[str] = mapped_column(
         String(36),
         unique=True,
         nullable=False,
-        index=True,
         default=lambda: str(uuid.uuid4()),
     )
+    # index=True removed — declared in __table_args__
     driver_id: Mapped[int] = mapped_column(
         ForeignKey("driver_profiles.id", ondelete="CASCADE", name="fk_driver_sessions_driver_id"),
         nullable=False,
-        index=True,
     )
 
     # Session Times & Metrics
@@ -95,12 +82,11 @@ class SessionData(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
     sudden_braking_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     lane_departure_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
-    # Status
+    # Status — index=True removed; declared in __table_args__
     status: Mapped[SessionStatus] = mapped_column(
         SAEnum(SessionStatus),
         nullable=False,
         default=SessionStatus.ACTIVE,
-        index=True,
     )
 
     # Relationships
@@ -110,8 +96,6 @@ class SessionData(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
         foreign_keys=[driver_id],
     )
 
-    # Use lazy="select" to prevent loading thousands of rows eagerly when querying sessions.
-    # Enables passive deletes so SQLite can cascade delete metrics on session deletion directly.
     metrics: Mapped[List["DrivingMetric"]] = relationship(
         "DrivingMetric",
         back_populates="session",
@@ -120,7 +104,7 @@ class SessionData(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
         lazy="select",
     )
 
-    # Table constraints and indexes
+    # Table constraints and indexes — single authoritative source
     __table_args__ = (
         Index("ix_driver_sessions_driver_id", "driver_id"),
         Index("ix_driver_sessions_session_start", "session_start"),
@@ -161,66 +145,36 @@ class SessionData(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
         return self.duration_minutes
 
     def calculate_average_speed(self, current_total_distance: float) -> float:
-        """Calculates average speed based on distance and duration.
-
-        Args:
-            current_total_distance: The total distance in kilometers.
-
-        Returns:
-            float: Calculated average speed.
-        """
+        """Calculates average speed based on distance and duration."""
         self.distance_km = max(0.0, current_total_distance)
         duration = self.calculate_duration()
         if duration > 0:
-            # (km / mins) * 60 = km/h
             self.avg_speed = (self.distance_km / duration) * 60.0
         else:
             self.avg_speed = 0.0
         return self.avg_speed
 
     def calculate_event_rate(self, event_count: int) -> float:
-        """Computes event frequency per minute based on current duration.
-
-        Args:
-            event_count: The quantity of matching logged incidents.
-
-        Returns:
-            float: Number of occurrences per minute.
-        """
+        """Computes event frequency per minute based on current duration."""
         duration = self.duration_minutes or self.calculate_duration()
         if duration > 0:
             return event_count / duration
         return 0.0
 
     def calculate_session_risk(self) -> float:
-        """Computes overall trip session risk level.
-
-        Formula:
-            risk = 0.30 * avg_cli
-                 + 0.25 * avg_stress_score
-                 + 0.25 * avg_risk_score
-                 + 0.15 * distraction_frequency
-                 + 0.10 * fatigue_frequency
-
-        Returns:
-            float: Computed session risk normalized between 0.0 and 1.0.
-        """
-        # Distraction and Fatigue frequency defined as event counts per minute normalized
+        """Computes overall trip session risk level."""
         duration = self.duration_minutes or self.calculate_duration()
         if duration > 0.0:
-            # Scale frequency so that 1 event per 3 minutes (rate of ~0.33) maps to high risk limit of 1.0
             distraction_frequency = min((self.distraction_events / duration) / 0.33, 1.0)
             fatigue_frequency = min((self.fatigue_events / duration) / 0.33, 1.0)
         else:
             distraction_frequency = 0.0
             fatigue_frequency = 0.0
 
-        # Normalize score inputs (if stress score or CLI is scaled 0-100, divide to map to 0-1)
         cli = (self.avg_cli / 100.0) if self.avg_cli > 1.0 else self.avg_cli
         stress = (self.avg_stress_score / 100.0) if self.avg_stress_score > 1.0 else self.avg_stress_score
         risk_score = (self.avg_risk_score / 100.0) if self.avg_risk_score > 1.0 else self.avg_risk_score
 
-        # Bounding limits
         cli = max(0.0, min(1.0, cli))
         stress = max(0.0, min(1.0, stress))
         risk_score = max(0.0, min(1.0, risk_score))
@@ -235,23 +189,18 @@ class SessionData(Base, TimestampMixin, UUIDMixin, SoftDeleteMixin):
         return max(0.0, min(1.0, risk))
 
     def increment_fatigue_event(self) -> None:
-        """Increments accumulated fatigue occurrences."""
         self.fatigue_events += 1
 
     def increment_distraction_event(self) -> None:
-        """Increments accumulated distraction occurrences."""
         self.distraction_events += 1
 
     def increment_aggression_event(self) -> None:
-        """Increments accumulated aggression occurrences."""
         self.aggression_events += 1
 
     def increment_lane_departure(self) -> None:
-        """Increments lane departure warning occurrences."""
         self.lane_departure_events += 1
 
     def increment_sudden_braking(self) -> None:
-        """Increments sudden braking occurrences."""
         self.sudden_braking_events += 1
 
     def to_dict(self) -> Dict[str, Any]:
