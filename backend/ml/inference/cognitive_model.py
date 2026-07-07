@@ -1,19 +1,4 @@
-"""Cognitive Load Model — real-time inference for attention, stress, and CLI.
-
-Predicts three cognitive state outputs from the 21-dimensional feature vector:
-    1. **Attention Score** [0, 100]: How focused the driver is.
-    2. **Stress Score** [0, 100]: Physiological stress level.
-    3. **Cognitive Load Index (CLI)** [0, 100]: Combined mental workload index.
-
-Model architecture:
-    A LightGBM regressor trained on labelled feature-vector sequences.
-    The model file is loaded from disk via ``joblib``. A fallback linear
-    model is used when the trained model is unavailable.
-
-The CLI is computed as a weighted combination of attention and stress::
-
-    CLI = 0.60 * (100 - attention) + 0.40 * stress
-"""
+"""Cognitive load model to predict driver attention, stress, and workload index."""
 
 from __future__ import annotations
 
@@ -39,20 +24,13 @@ from backend.app.constants import MLConstants
 
 FEATURE_DIM: int = 21
 
-# CLI weighting constants
 _CLI_ATTENTION_WEIGHT: float = 0.60
 _CLI_STRESS_WEIGHT: float = 0.40
 
 
-# ---------------------------------------------------------------------------
-# Result dataclass
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class CognitiveResult:
-    """Cognitive load inference result for a single feature vector."""
-
+    """Cognitive assessment outputs for a frame."""
     attention_score: float = 100.0
     stress_score: float = 0.0
     cli: float = 0.0
@@ -64,23 +42,8 @@ class CognitiveResult:
     is_fallback: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Fallback linear model
-# ---------------------------------------------------------------------------
-
-
 class _FallbackCognitiveModel:
-    """Simple heuristic cognitive model used when the trained model is absent.
-
-    Feature indices used (from FEATURE_NAMES)::
-        [2]  ear_mean
-        [4]  perclos
-        [5]  fatigue_probability
-        [10] gaze_off_road
-        [14] head_distracted
-        [16] stress_score_norm
-        [17] cli_norm
-    """
+    """Heuristic fallback calculation when the LightGBM model isn't available."""
 
     def predict(self, x: np.ndarray) -> CognitiveResult:
         ear_mean = float(x[2])
@@ -89,7 +52,6 @@ class _FallbackCognitiveModel:
         off_road = float(x[10])
         head_distracted = float(x[14])
         prev_stress_norm = float(x[16])
-        prev_cli_norm = float(x[17])
 
         attention_raw = (
             1.0
@@ -128,13 +90,8 @@ class _FallbackCognitiveModel:
         )
 
 
-# ---------------------------------------------------------------------------
-# Cognitive Model
-# ---------------------------------------------------------------------------
-
-
 class CognitiveModel:
-    """Thread-safe singleton LightGBM cognitive load inference model."""
+    """Wrapper for LightGBM cognitive load model with fallback options."""
 
     _instance: Optional["CognitiveModel"] = None
     _lock: threading.Lock = threading.Lock()
@@ -146,17 +103,17 @@ class CognitiveModel:
         self._model, self._is_fallback = self._load_model(model_path)
         self._model_version = "1.0.0-fallback" if self._is_fallback else "1.0.0"
         logger.info(
-            "CognitiveModel initialised — fallback=%s, version=%s",
+            "CognitiveModel initialized (fallback=%s, version=%s)",
             self._is_fallback,
             self._model_version,
         )
 
     @staticmethod
-    def _load_model(path: Path):  # type: ignore[return]
+    def _load_model(path: Path):
         if _JOBLIB_AVAILABLE and path.exists():
             try:
                 model = joblib.load(path)
-                logger.info("CognitiveModel loaded from %s.", path)
+                logger.info("Loaded CognitiveModel from %s", path)
                 return model, False
             except Exception as exc:
                 logger.warning("Failed to load CognitiveModel from %s: %s", path, exc)
@@ -170,38 +127,23 @@ class CognitiveModel:
                     cls._instance = cls(model_path=model_path)
         return cls._instance
 
-    # ------------------------------------------------------------------
-    # Inference
-    # ------------------------------------------------------------------
-
     def predict(self, feature_vector: np.ndarray) -> CognitiveResult:
-        """Runs cognitive load inference on a single feature vector.
-
-        Args:
-            feature_vector: NumPy array of shape (21,), dtype float32,
-                normalised by FeatureNormalizer.
-
-        Returns:
-            CognitiveResult: Predicted attention, stress, CLI, and flags.
-        """
+        """Infers attention, stress, and combined cognitive load index."""
         x = feature_vector.reshape(1, -1).astype(np.float32)
 
         if self._is_fallback:
             return self._model.predict(x.squeeze(0))
 
         try:
-            # Suppress sklearn feature-name warnings when model was trained with
-            # a DataFrame but we pass a plain numpy array at inference time.
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*feature names.*")
-                predictions = self._model.predict(x)  # shape (1, 3) or (1,)
+                predictions = self._model.predict(x)
 
             if predictions.ndim == 2 and predictions.shape[1] == 3:
                 attention = float(np.clip(predictions[0, 0], 0.0, 100.0))
                 stress = float(np.clip(predictions[0, 1], 0.0, 100.0))
                 cli_raw = float(np.clip(predictions[0, 2], 0.0, 100.0))
             else:
-                # Single output — treat as CLI
                 cli_raw = float(np.clip(predictions[0], 0.0, 100.0))
                 attention = float(np.clip(100.0 - cli_raw * 0.8, 0.0, 100.0))
                 stress = float(np.clip(cli_raw * 0.6, 0.0, 100.0))
@@ -225,20 +167,16 @@ class CognitiveModel:
                 is_fallback=False,
             )
         except Exception as exc:
-            logger.error("CognitiveModel.predict failed: %s. Using fallback.", exc)
-            # Instantiate a fresh fallback rather than reloading from an empty path
+            logger.error("CognitiveModel prediction failed, using fallback: %s", exc)
             return _FallbackCognitiveModel().predict(x.squeeze(0))
 
     def predict_batch(self, feature_matrix: np.ndarray) -> List[CognitiveResult]:
-        """Runs inference on an (N, 21) feature matrix."""
         return [self.predict(row) for row in feature_matrix]
 
     @property
     def is_fallback(self) -> bool:
-        """True when the heuristic fallback model is active."""
         return self._is_fallback
 
     @property
     def model_version(self) -> str:
-        """String version tag of the loaded model."""
         return self._model_version

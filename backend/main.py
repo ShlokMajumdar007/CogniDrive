@@ -1,19 +1,7 @@
-"""CogniDrive Backend — FastAPI application entry point.
+"""CogniDrive Backend - FastAPI application entry point.
 
-Bootstraps the complete Offline Edge-AI Driver Digital Twin system:
-
-    1. Loads and validates application settings (pydantic-settings / .env).
-    2. Initialises the SQLite database in WAL mode and runs DDL schema creation.
-    3. Warms up ML models (MobileFaceNet TFLite, XGBoost cognitive model, LightGBM
-       risk model, Isolation Forest anomaly engine).
-    4. Starts CameraManager automatically (Drishti-style).
-    5. Starts LivePipelineRunner — a background thread that continuously reads
-       frames and runs ML inference, updating PipelineManager.last_prediction.
-    6. Mounts all APIRouters under the canonical ``/api/v1`` prefix.
-    7. Configures CORS for the local HMI React / HTML dashboard frontend.
-    8. On shutdown: stops the runner, stops the camera, disposes the DB pool.
-
-All operations run 100% offline — no internet, cloud, or external API calls.
+Initializes database, model warmups, camera feeds, background processing pipeline,
+and registers APIs.
 """
 
 from __future__ import annotations
@@ -42,10 +30,6 @@ from backend.api.routes.recommendation import router as recommendation_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.app.constants import API_V1_PREFIX
 
-# ---------------------------------------------------------------------------
-# Logging configuration
-# ---------------------------------------------------------------------------
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
@@ -53,11 +37,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("CogniDrive.Main")
-
-
-# ---------------------------------------------------------------------------
-# ML model warmup helpers (unchanged)
-# ---------------------------------------------------------------------------
 
 
 def _warmup_mobilefacenet() -> None:
@@ -103,27 +82,8 @@ def _warmup_anomaly_engine() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# FastAPI lifespan — startup + shutdown
-# ---------------------------------------------------------------------------
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Manage the full application lifecycle.
-
-    Startup order:
-        1. Validate settings.
-        2. Create DB + tables, store sessionmaker in app.state.
-        3. Warm up ML models.
-        4. Start CameraManager (opens the physical device).
-        5. Start LivePipelineRunner (background ML processing thread).
-
-    Shutdown order:
-        1. Stop LivePipelineRunner (signals thread, waits for exit).
-        2. Stop CameraManager (releases device).
-        3. Dispose DB connection pool.
-    """
     settings = get_settings()
     logger.info(
         "Starting %s v%s | DEBUG=%s | PIPELINE_AUTO_START=%s",
@@ -133,7 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.PIPELINE_AUTO_START,
     )
 
-    # ── 1. Database ───────────────────────────────────────────────────
+    # 1. Database Setup
     t0 = time.perf_counter()
     try:
         create_database()
@@ -147,7 +107,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.critical("Database initialization FAILED: %s", exc)
 
-    # ── 2. ML Model Warmups ───────────────────────────────────────────
+    # 2. ML Model Warmups
     logger.info("Warming up ML models…")
     for warmup_fn in (
         _warmup_mobilefacenet,
@@ -160,7 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as exc:
             logger.warning("Warmup failed for %s: %s", warmup_fn.__name__, exc)
 
-    # ── 3. Camera + Pipeline auto-start (Drishti mode) ────────────────
+    # 3. Camera + Pipeline auto-start
     if settings.PIPELINE_AUTO_START:
         _start_live_pipeline(app, settings)
     else:
@@ -171,12 +131,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("CogniDrive backend ready — all subsystems initialized.")
 
-    yield  # ── Application serving requests ───────────────────────────
+    yield
 
-    # ── Shutdown ──────────────────────────────────────────────────────
+    # Shutdown lifecycles
     logger.info("Shutting down CogniDrive backend…")
 
-    # Stop live pipeline runner first (it holds a reference to camera + pipeline)
     try:
         from backend.app.dependencies import _live_pipeline_runner_instance
         if _live_pipeline_runner_instance is not None:
@@ -185,7 +144,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.error("Error stopping LivePipelineRunner: %s", exc)
 
-    # Stop camera
     try:
         from backend.app.dependencies import _camera_manager_instance
         if _camera_manager_instance is not None:
@@ -194,7 +152,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         pass
 
-    # Dispose DB
     try:
         dispose_engine()
         logger.info("Database connection pool disposed.")
@@ -205,15 +162,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def _start_live_pipeline(app: FastAPI, settings: Any) -> None:
-    """Helper that starts the camera and the background processing runner.
-
-    Called once during lifespan startup. All failures are caught and logged
-    so that the API can still serve requests (degraded mode) even if the
-    camera is unavailable.
-    """
     from backend.app.dependencies import get_camera_manager, _init_live_pipeline_runner
 
-    # ── Start CameraManager ───────────────────────────────────────────
+    # Start CameraManager
     camera_started = False
     try:
         camera_mgr = get_camera_manager()
@@ -234,14 +185,10 @@ def _start_live_pipeline(app: FastAPI, settings: Any) -> None:
     except Exception as exc:
         logger.error("CameraManager startup error: %s", exc)
 
-    # ── Start LivePipelineRunner ──────────────────────────────────────
-    # Open a long-lived DB session for the pipeline's writes.
-    # This session remains open for the lifetime of the runner; the runner
-    # itself commits periodically (every 300 frames) so it doesn't hold
-    # uncommitted rows indefinitely.
+    # Start LivePipelineRunner
     try:
         pipeline_db_session = SessionLocal()
-        app.state.pipeline_db_session = pipeline_db_session  # keep reference for cleanup
+        app.state.pipeline_db_session = pipeline_db_session
         _init_live_pipeline_runner(db_session=pipeline_db_session)
         logger.info(
             "LivePipelineRunner active — driver_id=%d, session_id=%d.",
@@ -256,13 +203,7 @@ def _start_live_pipeline(app: FastAPI, settings: Any) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Application factory
-# ---------------------------------------------------------------------------
-
-
 def create_app() -> FastAPI:
-    """Construct and configure the FastAPI application."""
     settings = get_settings()
 
     app = FastAPI(
@@ -282,7 +223,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ── CORS ─────────────────────────────────────────────────────────
+    # CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -299,14 +240,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ── Routers ──────────────────────────────────────────────────────
     prefix = API_V1_PREFIX
     app.include_router(auth_router, prefix=prefix)
     app.include_router(prediction_router, prefix=prefix)
     app.include_router(recommendation_router, prefix=prefix)
     app.include_router(dashboard_router, prefix=prefix)
-
-    # ── Root endpoint ─────────────────────────────────────────────────
 
     @app.get("/", include_in_schema=False)
     async def root() -> JSONResponse:
@@ -317,8 +255,6 @@ def create_app() -> FastAPI:
                 "docs": f"{API_V1_PREFIX}/docs",
             }
         )
-
-    # ── Health endpoint ───────────────────────────────────────────────
 
     @app.get(f"{prefix}/health", tags=["System"], summary="System health check")
     async def health(request: Request) -> JSONResponse:
@@ -351,7 +287,6 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
-        # Pipeline / camera status
         pipeline_running = False
         camera_running = False
         try:
@@ -382,16 +317,12 @@ def create_app() -> FastAPI:
             },
         )
 
-    # ── Pipeline status endpoint ──────────────────────────────────────
-
     @app.get(
         f"{prefix}/pipeline/status",
         tags=["System"],
         summary="Live pipeline status and last prediction snapshot",
     )
     async def pipeline_status(request: Request) -> JSONResponse:
-        """Returns the current state of the LivePipelineRunner and the
-        most recently processed prediction from PipelineManager.last_prediction."""
         from backend.app.dependencies import (
             _live_pipeline_runner_instance,
             _camera_manager_instance,
@@ -418,8 +349,6 @@ def create_app() -> FastAPI:
             }
         )
 
-    # ── Global exception handler ──────────────────────────────────────
-
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled exception on %s %s: %s", request.method, request.url, exc)
@@ -431,16 +360,7 @@ def create_app() -> FastAPI:
     return app
 
 
-# ---------------------------------------------------------------------------
-# Application instance
-# ---------------------------------------------------------------------------
-
 app: FastAPI = create_app()
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     settings = get_settings()
